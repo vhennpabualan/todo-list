@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-dark-950: #0a0f1f;
+  --color-dark-900: #111b2e;
+  --color-dark-800: #1a2847;
+  --color-dark-700: #253456;
+  --color-dark-600: #314570;
+  --color-dark-500: #3d5885;
+  --color-dark-400: #6b7f99;
+}
+
+html, body {
+  background-color: var(--color-dark-950);
+  color: white;
+}
+
+@layer components {
+  .nav-item {
+    @apply transition-all duration-200 cursor-pointer;
+  }
+
+  .task-item {
+    @apply flex items-start gap-4 p-4 bg-dark-800 rounded-lg border border-dark-700 hover:border-blue-500 transition hover:shadow-lg hover:shadow-blue-500/20;
+  }
+
+  .task-checkbox {
+    @apply w-5 h-5 rounded border-2 border-dark-600 cursor-pointer transition hover:border-blue-500 flex-shrink-0 mt-1;
+  }
+
+  .task-checkbox:checked {
+    @apply bg-blue-600 border-blue-600;
+  }
+
+  .badge {
+    @apply px-2 py-1 rounded text-xs font-semibold;
+  }
+
+  .badge-high {
+    @apply bg-red-900 text-red-200;
+  }
+
+  .badge-medium {
+    @apply bg-orange-900 text-orange-200;
+  }
+
+  .badge-low {
+    @apply bg-emerald-900 text-emerald-200;
+  }
+
+  .project-item {
+    @apply cursor-pointer transition-colors;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 100, 100, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.5);
+}
+
+/* Animations */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.task-item {
+  animation: slideInRight 0.2s ease-out;
+}
+
+/* Focus styles for accessibility */
+button:focus,
+input:focus,
+select:focus {
+  outline: none;
+  ring: 2px;
+  ring-offset: 2px;
+  ring-offset-color: var(--color-dark-950);
+  ring-color: #3b82f6;
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+  .task-item {
+    @apply flex-col;
+    gap: 0.75rem;
+  }
+
+  .task-item > div:last-child {
+    @apply flex-wrap;
+  }
+
+  input[type="text"],
+  select {
+    @apply text-base;
+  }
+}
