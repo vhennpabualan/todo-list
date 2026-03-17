@@ -1,5 +1,22 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Dependencies
 node_modules/
 dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-*.local
-.vscode/settings.json
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

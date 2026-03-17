@@ -10,70 +10,146 @@
   --color-dark-600: #314570;
   --color-dark-500: #3d5885;
   --color-dark-400: #6b7f99;
+  --color-dark-300: #8a9bb8;
+  --color-light-50: #f9fafb;
+  --color-light-100: #f3f4f6;
+  --color-light-200: #e5e7eb;
+  --color-light-300: #d1d5db;
+  --color-light-400: #9ca3af;
+  --color-light-500: #6b7280;
+  --color-light-600: #4b5563;
+  --color-light-700: #374151;
+  --color-light-900: #111827;
 }
 
-html, body {
-  background-color: var(--color-dark-950);
-  color: white;
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply transition-colors duration-300;
+}
+
+/* Light theme */
+body {
+  @apply bg-light-50 text-dark-950;
+}
+
+/* Dark theme */
+body.dark {
+  @apply bg-dark-950 text-white;
 }
 
 @layer components {
+  /* Navigation Items */
   .nav-item {
     @apply transition-all duration-200 cursor-pointer;
   }
 
+  .nav-item.active {
+    @apply bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg;
+  }
+
+  /* Task Items */
   .task-item {
-    @apply flex items-start gap-4 p-4 bg-dark-800 rounded-lg border border-dark-700 hover:border-blue-500 transition hover:shadow-lg hover:shadow-blue-500/20;
+    @apply flex items-start gap-4 p-4 bg-white dark:bg-dark-800 rounded-xl border border-light-200 dark:border-dark-700 hover:border-blue-400 dark:hover:border-blue-500 transition hover:shadow-lg hover:shadow-blue-500/10;
+  }
+
+  .task-item.completed {
+    @apply opacity-60;
   }
 
   .task-checkbox {
-    @apply w-5 h-5 rounded border-2 border-dark-600 cursor-pointer transition hover:border-blue-500 flex-shrink-0 mt-1;
+    @apply w-5 h-5 rounded-lg border-2 border-light-300 dark:border-dark-600 cursor-pointer transition hover:border-blue-500 flex-shrink-0 mt-0.5 accent-blue-600;
   }
 
-  .task-checkbox:checked {
-    @apply bg-blue-600 border-blue-600;
+  /* Stat Cards */
+  .stat-card {
+    @apply p-4 bg-white dark:bg-dark-800 rounded-xl border border-light-200 dark:border-dark-700 hover:shadow-lg transition;
   }
 
+  /* Badges */
   .badge {
-    @apply px-2 py-1 rounded text-xs font-semibold;
+    @apply px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap;
   }
 
   .badge-high {
-    @apply bg-red-900 text-red-200;
+    @apply bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300;
   }
 
   .badge-medium {
-    @apply bg-orange-900 text-orange-200;
+    @apply bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300;
   }
 
   .badge-low {
-    @apply bg-emerald-900 text-emerald-200;
+    @apply bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300;
   }
 
+  /* AI Messages */
+  .ai-message {
+    @apply p-3 bg-light-100 dark:bg-dark-700 rounded-lg border border-light-200 dark:border-dark-600 animate-slideIn;
+  }
+
+  .ai-message.user {
+    @apply bg-blue-100 dark:bg-blue-900/30 border-blue-200 dark:border-blue-800 ml-8;
+  }
+
+  .ai-message.assistant {
+    @apply bg-purple-100 dark:bg-purple-900/30 border-purple-200 dark:border-purple-800 mr-8;
+  }
+
+  /* Project Item */
   .project-item {
     @apply cursor-pointer transition-colors;
+  }
+
+  .project-item.active {
+    @apply bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300;
+  }
+
+  /* Edit Button */
+  .edit-btn {
+    @apply cursor-pointer transition-colors;
+  }
+
+  /* Input Focus States */
+  input:focus,
+  select:focus,
+  textarea:focus {
+    @apply outline-none ring-2 ring-blue-500/20 border-blue-500;
   }
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
+  @apply bg-light-100 dark:bg-dark-800;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 100, 100, 0.3);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 100, 100, 0.5);
+  @apply bg-light-300 dark:bg-dark-600 rounded-full hover:bg-light-400 dark:hover:bg-dark-500 transition;
 }
 
 /* Animations */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes slideInRight {
   from {
     opacity: 0;
@@ -85,34 +161,95 @@ html, body {
   }
 }
 
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-slideIn {
+  animation: slideIn 0.3s ease-out;
+}
+
+.animate-slideInRight {
+  animation: slideInRight 0.3s ease-out;
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
 .task-item {
   animation: slideInRight 0.2s ease-out;
 }
 
-/* Focus styles for accessibility */
-button:focus,
-input:focus,
-select:focus {
-  outline: none;
-  ring: 2px;
-  ring-offset: 2px;
-  ring-offset-color: var(--color-dark-950);
-  ring-color: #3b82f6;
-}
-
 /* Responsive improvements */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .task-item {
-    @apply flex-col;
-    gap: 0.75rem;
+    @apply flex-col gap-3;
   }
 
   .task-item > div:last-child {
     @apply flex-wrap;
   }
+}
 
-  input[type="text"],
-  select {
-    @apply text-base;
+/* Smooth transitions for theme */
+* {
+  @apply transition-colors duration-300;
+}
+
+/* Prevent transition on load */
+html.no-transition * {
+  @apply !transition-none;
+}
+
+/* Gradient text */
+.gradient-text {
+  @apply bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent;
+}
+
+/* Utility classes */
+.glass {
+  @apply bg-white/80 dark:bg-dark-800/80 backdrop-blur-md;
+}
+
+.shadow-glow {
+  @apply shadow-lg shadow-blue-500/20;
+}
+
+/* Floating button position when AI panel is open on desktop */
+@media (min-width: 1024px) {
+  #floatingAddBtn.ai-panel-open {
+    right: calc(20rem + 3rem); /* 80 (w-80) + 12 (right-12) = 320px + 48px */
+  }
+
+  /* Show sidebar by default on desktop */
+  #sidebar {
+    display: flex !important;
+  }
+
+  /* Smooth sidebar toggle - use margin instead of transform */
+  #sidebar {
+    transition: margin-left 0.3s ease-in-out, opacity 0.3s ease-in-out;
+    position: relative;
+  }
+
+  #sidebar.hidden {
+    margin-left: -18rem; /* -w-72 */
+    opacity: 0;
+    pointer-events: none;
   }
 }
