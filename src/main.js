@@ -8,16 +8,20 @@ class TodoApp {
   constructor() {
     this.tasks = this.loadTasks()
     this.reminders = this.loadReminders()
-    this.currentFilter = 'today'
+    this.currentFilter = 'inbox'
     this.isDarkMode = this.loadTheme()
     this.aiMessages = []
-    this.aiApiKey = import.meta.env.VITE_OPENROUTER_API_KEY || ''
+    this.aiApiKey = import.meta.env.VITE_CEREBRAS_API_KEY || ''
     this.pendingDeleteId = null
     this.editingTaskId = null
     this.reminderCheckInterval = null
     this.notifiedReminders = new Set()
     this.currentUser = null
     this.isSignUpMode = false
+    this.lastApiCall = 0
+    this.apiCallDelay = 2000 // 2 seconds between API calls
+    this.apiRetryCount = 0
+    this.maxRetries = 3
     this.setupAuthModal()
     this.checkAuth()
   }
@@ -215,13 +219,20 @@ class TodoApp {
       throw new Error(data.msg || data.message || data.error_description || 'Sign up failed')
     }
 
-    // Store auth token
+    // Store auth token and refresh token
     const token = data.session?.access_token || data.access_token
+    const refreshToken = data.session?.refresh_token || data.refresh_token
+    
     if (token) {
       localStorage.setItem('authToken', token)
       console.log('Auth token stored:', token.substring(0, 20) + '...')
     } else {
       console.error('No auth token in response:', data)
+    }
+    
+    if (refreshToken) {
+      localStorage.setItem('refreshToken', refreshToken)
+      console.log('Refresh token stored')
     }
 
     // Store user in database
@@ -269,13 +280,20 @@ class TodoApp {
       throw new Error(data.error_description || data.msg || data.message || 'Sign in failed')
     }
 
-    // Store auth token
+    // Store auth token and refresh token
     const token = data.access_token || data.session?.access_token
+    const refreshToken = data.refresh_token || data.session?.refresh_token
+    
     if (token) {
       localStorage.setItem('authToken', token)
       console.log('Auth token stored:', token.substring(0, 20) + '...')
     } else {
       console.error('No auth token in response:', data)
+    }
+    
+    if (refreshToken) {
+      localStorage.setItem('refreshToken', refreshToken)
+      console.log('Refresh token stored')
     }
 
     // Get user profile
@@ -293,6 +311,55 @@ class TodoApp {
     await this.loadUserData()
     this.render()
     this.showNotification(`Welcome back, ${this.currentUser.name}!`, '👋', 2000)
+  }
+
+  async refreshSession() {
+    const refreshToken = localStorage.getItem('refreshToken')
+    if (!refreshToken || !SUPABASE_URL || !SUPABASE_KEY) {
+      console.warn('Cannot refresh session: missing refresh token or config')
+      return false
+    }
+
+    try {
+      console.log('🔄 Attempting to refresh session...')
+      const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`
+        },
+        body: JSON.stringify({
+          refresh_token: refreshToken
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        console.error('❌ Session refresh failed:', data)
+        return false
+      }
+
+      // Update tokens
+      const newToken = data.access_token || data.session?.access_token
+      const newRefreshToken = data.refresh_token || data.session?.refresh_token
+
+      if (newToken) {
+        localStorage.setItem('authToken', newToken)
+        console.log('✅ Auth token refreshed')
+      }
+
+      if (newRefreshToken) {
+        localStorage.setItem('refreshToken', newRefreshToken)
+        console.log('✅ Refresh token updated')
+      }
+
+      return true
+    } catch (error) {
+      console.error('❌ Error refreshing session:', error)
+      return false
+    }
   }
 
   async storeUserProfile(userId, email, name) {
@@ -355,13 +422,15 @@ class TodoApp {
   logout() {
     localStorage.removeItem('user')
     localStorage.removeItem('authToken')
+    localStorage.removeItem('refreshToken')
     localStorage.removeItem('todoTasks')
     localStorage.removeItem('todoReminders')
     this.currentUser = null
     this.tasks = []
     this.reminders = []
     this.hideAuthenticatedUI()
-    this.showAuthModal()
+    this.render()
+    this.showNotification('Logged out successfully', '👋', 2000)
   }
 
   showAuthError(message) {
@@ -388,7 +457,7 @@ class TodoApp {
     }
   }
 
-  init() {
+  async init() {
     this.applyTheme()
     this.setupThemeToggle()
     this.setupMobileMenu()
@@ -396,6 +465,8 @@ class TodoApp {
     this.setupDeleteModal()
     this.setupNotifications()
     this.setupAIAssistant()
+    this.setupAIPanelDrag()
+    this.setupAIChatBubbleDrag()
     this.setupRemindersPanel()
     this.setupOutsideClickHandler()
     this.setupEventListeners()
@@ -403,17 +474,30 @@ class TodoApp {
     this.setupLogout()
     this.requestNotificationPermission()
     this.updateDate()
-    this.loadUserData()
+    await this.loadUserData()
     this.render()
     this.generateAIGreeting()
   }
 
   async loadUserData() {
-    if (this.currentUser) {
-      this.tasks = await this.loadTasksFromSupabase()
-      this.reminders = await this.loadRemindersFromSupabase()
-    } else {
-      // Load demo tasks for non-authenticated users
+    try {
+      if (this.currentUser) {
+        console.log('📥 Loading user data for:', this.currentUser.id)
+        const [tasks, reminders] = await Promise.all([
+          this.loadTasksFromSupabase(),
+          this.loadRemindersFromSupabase()
+        ])
+        this.tasks = tasks
+        this.reminders = reminders
+        console.log('✅ Loaded:', this.tasks.length, 'tasks and', this.reminders.length, 'reminders')
+      } else {
+        // Load demo tasks for non-authenticated users
+        console.log('👤 No user logged in, loading demo tasks')
+        this.tasks = this.getDefaultTasks()
+        this.reminders = []
+      }
+    } catch (error) {
+      console.error('❌ Error in loadUserData:', error)
       this.tasks = this.getDefaultTasks()
       this.reminders = []
     }
@@ -826,6 +910,19 @@ class TodoApp {
       return
     }
 
+    // Validate due date if provided
+    if (dueDate) {
+      const taskDueDate = new Date(dueDate)
+      const today = new Date()
+      today.setHours(0, 0, 0, 0) // Reset time to start of day for fair comparison
+      
+      if (taskDueDate < today) {
+        console.warn('⚠️ Task due date is in the past:', taskDueDate)
+        this.showNotification('⚠️ Warning: Due date is in the past. Consider choosing a future date.', '⚠️', 4000)
+        // Don't return - allow saving but warn user
+      }
+    }
+
     // Require authentication to save tasks
     if (!this.currentUser) {
       this.closeTaskModal()
@@ -896,12 +993,15 @@ class TodoApp {
   setupAIAssistant() {
     const openAIBtn = document.getElementById('openAIBtn')
     const closeAIBtn = document.getElementById('closeAIBtn')
+    const minimizeAIBtn = document.getElementById('minimizeAIBtn')
+    const aiChatBubble = document.getElementById('aiChatBubble')
     const clearChatBtn = document.getElementById('clearChatBtn')
     const clearChatBtnDesktop = document.getElementById('clearChatBtnDesktop')
     const aiPanel = document.getElementById('aiPanel')
     const aiOverlay = document.getElementById('aiOverlay')
     const aiSendBtn = document.getElementById('aiSendBtn')
     const aiInput = document.getElementById('aiInput')
+    const floatingAddBtn = document.getElementById('floatingAddBtn')
 
     if (openAIBtn) {
       openAIBtn.addEventListener('click', (e) => {
@@ -912,9 +1012,8 @@ class TodoApp {
         aiPanel.style.display = 'flex'
         if (window.innerWidth < 1024) {
           aiOverlay.classList.remove('hidden')
+          aiChatBubble.classList.add('hidden')
         }
-        // Shift floating button to avoid overlap on desktop
-        document.getElementById('floatingAddBtn').classList.add('ai-panel-open')
         this.checkApiKey()
         this.scrollAIToBottom()
       })
@@ -926,8 +1025,30 @@ class TodoApp {
         aiPanel.classList.add('hidden')
         aiPanel.style.display = 'none'
         aiOverlay.classList.add('hidden')
-        // Reset floating button position
-        document.getElementById('floatingAddBtn').classList.remove('ai-panel-open')
+        if (window.innerWidth < 1024) {
+          aiChatBubble.classList.remove('hidden')
+        }
+      })
+    }
+
+    if (minimizeAIBtn) {
+      minimizeAIBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        aiPanel.classList.add('hidden')
+        aiPanel.style.display = 'none'
+        aiOverlay.classList.add('hidden')
+        aiChatBubble.classList.remove('hidden')
+      })
+    }
+
+    if (aiChatBubble) {
+      aiChatBubble.addEventListener('click', (e) => {
+        e.stopPropagation()
+        aiPanel.classList.remove('hidden')
+        aiPanel.style.display = 'flex'
+        aiOverlay.classList.remove('hidden')
+        aiChatBubble.classList.add('hidden')
+        this.scrollAIToBottom()
       })
     }
 
@@ -945,8 +1066,9 @@ class TodoApp {
           aiPanel.classList.add('hidden')
           aiPanel.style.display = 'none'
           aiOverlay.classList.add('hidden')
-          // Reset floating button position
-          document.getElementById('floatingAddBtn').classList.remove('ai-panel-open')
+          if (window.innerWidth < 1024) {
+            aiChatBubble.classList.remove('hidden')
+          }
         }
       })
     }
@@ -957,6 +1079,212 @@ class TodoApp {
         if (e.key === 'Enter') this.sendAIMessage()
       })
     }
+  }
+  setupAIPanelDrag() {
+    const aiPanel = document.getElementById('aiPanel')
+    const header = aiPanel?.querySelector('div:first-child')
+
+    if (!aiPanel || !header || window.innerWidth < 1024) return
+
+    let isDragging = false
+    let currentX
+    let currentY
+    let initialX
+    let initialY
+
+    header.addEventListener('mousedown', (e) => {
+      // Don't drag if clicking on buttons or their children
+      if (e.target.closest('button')) return
+      
+      isDragging = true
+      initialX = e.clientX - aiPanel.offsetLeft
+      initialY = e.clientY - aiPanel.offsetTop
+      aiPanel.classList.add('dragging')
+      e.preventDefault()
+    })
+
+    const handleMouseMove = (e) => {
+      if (!isDragging) return
+
+      currentX = e.clientX - initialX
+      currentY = e.clientY - initialY
+
+      // Keep panel within viewport bounds
+      const maxX = window.innerWidth - aiPanel.offsetWidth
+      const maxY = window.innerHeight - aiPanel.offsetHeight
+
+      currentX = Math.max(0, Math.min(currentX, maxX))
+      currentY = Math.max(0, Math.min(currentY, maxY))
+
+      aiPanel.style.position = 'fixed'
+      aiPanel.style.left = currentX + 'px'
+      aiPanel.style.right = 'auto'
+      aiPanel.style.top = currentY + 'px'
+      aiPanel.style.bottom = 'auto'
+    }
+
+    const handleMouseUp = () => {
+      isDragging = false
+      aiPanel.classList.remove('dragging')
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+
+    // Re-enable drag on window resize if still on desktop
+    window.addEventListener('resize', () => {
+      if (window.innerWidth < 1024) {
+        isDragging = false
+        aiPanel.classList.remove('dragging')
+      }
+    })
+  }
+
+  setupAIChatBubbleDrag() {
+    const aiChatBubble = document.getElementById('aiChatBubble')
+
+    if (!aiChatBubble) return
+
+    let isDragging = false
+    let currentX
+    let currentY
+    let initialX
+    let initialY
+    let startX
+    let startY
+    const dragThreshold = 10 // pixels to move before considering it a drag
+
+    aiChatBubble.addEventListener('touchstart', (e) => {
+      const touch = e.touches[0]
+      startX = touch.clientX
+      startY = touch.clientY
+      initialX = touch.clientX - aiChatBubble.offsetLeft
+      initialY = touch.clientY - aiChatBubble.offsetTop
+      isDragging = false
+    }, { passive: true })
+
+    aiChatBubble.addEventListener('touchmove', (e) => {
+      const touch = e.touches[0]
+      const deltaX = Math.abs(touch.clientX - startX)
+      const deltaY = Math.abs(touch.clientY - startY)
+      
+      // Only start dragging if moved beyond threshold
+      if (deltaX > dragThreshold || deltaY > dragThreshold) {
+        isDragging = true
+        aiChatBubble.classList.add('dragging')
+        
+        currentX = touch.clientX - initialX
+        currentY = touch.clientY - initialY
+
+        // Keep bubble within viewport bounds
+        const maxX = window.innerWidth - aiChatBubble.offsetWidth
+        const maxY = window.innerHeight - aiChatBubble.offsetHeight
+
+        currentX = Math.max(0, Math.min(currentX, maxX))
+        currentY = Math.max(0, Math.min(currentY, maxY))
+
+        aiChatBubble.style.position = 'fixed'
+        aiChatBubble.style.left = currentX + 'px'
+        aiChatBubble.style.right = 'auto'
+        aiChatBubble.style.top = currentY + 'px'
+        aiChatBubble.style.bottom = 'auto'
+      }
+    }, { passive: true })
+
+    aiChatBubble.addEventListener('touchend', (e) => {
+      aiChatBubble.classList.remove('dragging')
+      
+      // If didn't drag, treat as click
+      if (!isDragging) {
+        const aiPanel = document.getElementById('aiPanel')
+        const aiOverlay = document.getElementById('aiOverlay')
+        aiPanel.classList.remove('hidden')
+        aiPanel.style.display = 'flex'
+        aiOverlay.classList.remove('hidden')
+        aiChatBubble.classList.add('hidden')
+        this.scrollAIToBottom()
+      }
+      isDragging = false
+    })
+
+    // Mouse events for desktop testing only
+    aiChatBubble.addEventListener('mousedown', (e) => {
+      if (window.innerWidth >= 1024) return
+      
+      startX = e.clientX
+      startY = e.clientY
+      initialX = e.clientX - aiChatBubble.offsetLeft
+      initialY = e.clientY - aiChatBubble.offsetTop
+      isDragging = false
+      e.preventDefault()
+    })
+
+    const handleMouseMove = (e) => {
+      if (window.innerWidth >= 1024) return
+      
+      const deltaX = Math.abs(e.clientX - startX)
+      const deltaY = Math.abs(e.clientY - startY)
+      
+      // Only start dragging if moved beyond threshold
+      if (deltaX > dragThreshold || deltaY > dragThreshold) {
+        isDragging = true
+        aiChatBubble.classList.add('dragging')
+
+        currentX = e.clientX - initialX
+        currentY = e.clientY - initialY
+
+        // Keep bubble within viewport bounds
+        const maxX = window.innerWidth - aiChatBubble.offsetWidth
+        const maxY = window.innerHeight - aiChatBubble.offsetHeight
+
+        currentX = Math.max(0, Math.min(currentX, maxX))
+        currentY = Math.max(0, Math.min(currentY, maxY))
+
+        aiChatBubble.style.position = 'fixed'
+        aiChatBubble.style.left = currentX + 'px'
+        aiChatBubble.style.right = 'auto'
+        aiChatBubble.style.top = currentY + 'px'
+        aiChatBubble.style.bottom = 'auto'
+      }
+    }
+
+    const handleMouseUp = (e) => {
+      if (window.innerWidth >= 1024) return
+      
+      aiChatBubble.classList.remove('dragging')
+      
+      // If didn't drag, treat as click
+      if (!isDragging) {
+        const aiPanel = document.getElementById('aiPanel')
+        const aiOverlay = document.getElementById('aiOverlay')
+        aiPanel.classList.remove('hidden')
+        aiPanel.style.display = 'flex'
+        aiOverlay.classList.remove('hidden')
+        aiChatBubble.classList.add('hidden')
+        this.scrollAIToBottom()
+      }
+      isDragging = false
+      
+      // Remove listeners after mouseup
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    aiChatBubble.addEventListener('mousedown', (e) => {
+      if (window.innerWidth >= 1024) return
+      
+      startX = e.clientX
+      startY = e.clientY
+      initialX = e.clientX - aiChatBubble.offsetLeft
+      initialY = e.clientY - aiChatBubble.offsetTop
+      isDragging = false
+      
+      // Add listeners only when mouse is down on bubble
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+      
+      e.preventDefault()
+    })
   }
 
   // Close AI panel when clicking outside on main content
@@ -1035,6 +1363,17 @@ class TodoApp {
     }
 
     const reminderDateTime = `${date}T${time}`
+    
+    // Validate that reminder date is in the future
+    const reminderDate = new Date(reminderDateTime)
+    const now = new Date()
+    
+    if (reminderDate <= now) {
+      console.warn('⚠️ Reminder date is in the past:', reminderDate)
+      this.showNotification('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', '⚠️', 4000)
+      return
+    }
+    
     this.createReminder(title, reminderDateTime)
     this.clearReminderForm()
     
@@ -1047,9 +1386,13 @@ class TodoApp {
 
   renderReminders() {
     const remindersList = document.getElementById('remindersList')
-    if (!remindersList) return
+    if (!remindersList) {
+      console.warn('⚠️ remindersList element not found')
+      return
+    }
 
     const reminders = this.getUpcomingReminders()
+    console.log('🎨 Rendering', reminders.length, 'upcoming reminders')
 
     if (reminders.length === 0) {
       remindersList.innerHTML = `
@@ -1063,26 +1406,46 @@ class TodoApp {
         const reminderDate = new Date(reminder.reminderDateTime)
         const now = new Date()
         const timeDiff = reminderDate - now
-        const hoursLeft = Math.ceil(timeDiff / (1000 * 60 * 60))
         const daysLeft = Math.floor(timeDiff / (1000 * 60 * 60 * 24))
+        const hoursLeft = Math.floor((timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+        const minutesLeft = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60))
+        const isOverdue = timeDiff < 0
 
         let timeDisplay = ''
-        if (daysLeft > 0) {
-          timeDisplay = `${daysLeft}d ${hoursLeft % 24}h`
+        if (isOverdue) {
+          const absDiff = Math.abs(timeDiff)
+          const overdueMins = Math.floor(absDiff / (1000 * 60))
+          const overdueHours = Math.floor(absDiff / (1000 * 60 * 60))
+          const overdueDays = Math.floor(absDiff / (1000 * 60 * 60 * 24))
+          
+          if (overdueDays > 0) {
+            timeDisplay = `${overdueDays}d ${overdueHours % 24}h overdue`
+          } else if (overdueHours > 0) {
+            timeDisplay = `${overdueHours}h ${overdueMins % 60}m overdue`
+          } else {
+            timeDisplay = `${overdueMins}m overdue`
+          }
         } else {
-          timeDisplay = `${hoursLeft}h`
+          if (daysLeft > 0) {
+            timeDisplay = `${daysLeft}d ${hoursLeft}h ${minutesLeft}m left`
+          } else if (hoursLeft > 0) {
+            timeDisplay = `${hoursLeft}h ${minutesLeft}m left`
+          } else {
+            timeDisplay = `${minutesLeft}m left`
+          }
         }
 
         return `
-          <div class="p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg">
+          <div class="p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg ${isOverdue ? 'animate-pulse border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20' : ''}">
             <div class="flex items-start justify-between gap-2">
               <div class="flex-1 min-w-0">
                 <p class="font-medium text-sm text-light-900 dark:text-white truncate">${reminder.title}</p>
-                <p class="text-xs text-orange-600 dark:text-orange-400 mt-1">
-                  ${reminderDate.toLocaleString()} (${timeDisplay} left)
+                <p class="text-xs ${isOverdue ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-orange-600 dark:text-orange-400'} mt-1">
+                  ${reminderDate.toLocaleString()} (${timeDisplay})
                 </p>
               </div>
               <div class="flex gap-1 flex-shrink-0">
+                ${isOverdue ? '<span class="px-2 py-1 bg-red-500 text-white text-xs rounded font-bold animate-pulse">!</span>' : ''}
                 <button class="complete-reminder-btn p-1 hover:bg-orange-200 dark:hover:bg-orange-800 rounded transition text-sm" data-id="${reminder.id}" title="Complete">✓</button>
                 <button class="delete-reminder-btn p-1 hover:bg-red-200 dark:hover:bg-red-800 rounded transition text-sm" data-id="${reminder.id}" title="Delete">✕</button>
               </div>
@@ -1156,11 +1519,11 @@ class TodoApp {
 
   checkApiKey() {
     if (!this.aiApiKey) {
-      this.addAIMessage('🔑 No API key found. Please add VITE_OPENROUTER_API_KEY to your .env file and restart the dev server.', 'assistant')
+      this.addAIMessage('🔑 No API key found. Please add VITE_CEREBRAS_API_KEY to your .env file and restart the dev server.', 'assistant')
+      this.addAIMessage('Get your key from: https://console.cerebras.ai', 'assistant')
       this.addAIMessage('Or type your API key here to use it temporarily:', 'assistant')
       return
     }
-    this.addAIMessage('✅ Ready to help! Ask me anything about your tasks.', 'assistant')
   }
 
   async testApiKey() {
@@ -1176,7 +1539,7 @@ class TodoApp {
           'X-Title': 'TaskFlow'
         },
         body: JSON.stringify({
-          model: 'gpt-3.5-turbo',
+          model: 'cerebras/llama3.1-8b',
           messages: [
             {
               role: 'user',
@@ -1248,21 +1611,41 @@ class TodoApp {
     this.addAIMessage(message, 'user')
     input.value = ''
 
+    console.log('🤖 Processing message:', message)
+
+    // Check if user is asking about current date/time
+    if (this.isDateTimeRequest(message)) {
+      console.log('✅ Detected: Date/Time request')
+      this.handleDateTimeRequest(message)
+      return
+    }
+
     // Check if user is asking to create/add a task
     if (this.isTaskCreationRequest(message)) {
+      console.log('✅ Detected: Task creation request')
       await this.handleAITaskCreation(message)
       return
     }
 
+    // Check if user is asking to create a reminder
+    if (this.isReminderCreationRequest(message)) {
+      console.log('✅ Detected: Reminder creation request')
+      await this.handleAIReminderCreation(message)
+      return
+    }
+
+    console.log('ℹ️ No special request detected, calling AI API')
+
     if (!this.aiApiKey) {
-      this.addAIMessage('❌ API key not configured. Please add VITE_OPENROUTER_API_KEY to your .env file and restart the dev server.', 'assistant')
+      this.addAIMessage('❌ API key not configured. Please add VITE_CEREBRAS_API_KEY to your .env file and restart the dev server.', 'assistant')
       return
     }
 
     const loadingMsg = document.createElement('div')
     loadingMsg.className = 'ai-message assistant'
-    loadingMsg.innerHTML = '<p class="text-sm">🤔 Thinking...</p>'
+    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
     document.getElementById('aiMessages').appendChild(loadingMsg)
+    this.scrollAIToBottom()
 
     try {
       const response = await this.callOpenRouterAPI(message)
@@ -1274,17 +1657,286 @@ class TodoApp {
     }
   }
 
+  isDateTimeRequest(message) {
+    const keywords = [
+      'what date', 'what\'s the date', 'whats the date', 'current date', 'today\'s date', 'todays date',
+      'what time', 'what\'s the time', 'whats the time', 'current time',
+      'what day', 'what\'s the day', 'whats the day', 'day is it', 'day today',
+      'what year', 'what\'s the year', 'whats the year', 'current year',
+      'date today', 'time now', 'today date', 'date and time'
+    ]
+    const lowerMessage = message.toLowerCase()
+    return keywords.some(keyword => lowerMessage.includes(keyword))
+  }
+
+  handleDateTimeRequest(message) {
+    const now = new Date()
+    const lowerMessage = message.toLowerCase()
+    
+    // Format options
+    const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }
+    const timeOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }
+    
+    const fullDate = now.toLocaleDateString('en-US', dateOptions)
+    const time = now.toLocaleTimeString('en-US', timeOptions)
+    const shortDate = now.toLocaleDateString('en-US')
+    const year = now.getFullYear()
+    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' })
+    
+    let response = ''
+    
+    // Determine what user is asking for
+    if (lowerMessage.includes('time') && lowerMessage.includes('date')) {
+      response = `📅 Today is ${fullDate}\n⏰ Current time is ${time}`
+    } else if (lowerMessage.includes('time')) {
+      response = `⏰ The current time is ${time}`
+    } else if (lowerMessage.includes('year')) {
+      response = `📅 The current year is ${year}`
+    } else if (lowerMessage.includes('day') && !lowerMessage.includes('date')) {
+      response = `📅 Today is ${dayName}`
+    } else {
+      // Default to full date
+      response = `📅 Today is ${fullDate}`
+    }
+    
+    this.addAIMessage(response, 'assistant')
+  }
+
   isTaskCreationRequest(message) {
     const keywords = ['add task', 'create task', 'new task', 'add a task', 'create a task', 'add to my tasks', 'remind me to', 'i need to', 'i should', 'todo:', 'task:']
     const lowerMessage = message.toLowerCase()
     return keywords.some(keyword => lowerMessage.includes(keyword))
   }
 
+  isReminderCreationRequest(message) {
+    const keywords = [
+      'set reminder', 'create reminder', 'remind me', 'add reminder', 'new reminder', 'schedule reminder',
+      'set a reminder', 'create a reminder', 'add a reminder', 'make a reminder', 'make reminder',
+      'reminder for', 'reminder at', 'reminder on', 'reminder about',
+      'can you remind', 'could you remind', 'please remind', 'i need a reminder'
+    ]
+    const lowerMessage = message.toLowerCase()
+    return keywords.some(keyword => lowerMessage.includes(keyword))
+  }
+
+  async handleAIReminderCreation(message) {
+    console.log('🔔 AI Reminder Creation Request:', message)
+    
+    const loadingMsg = document.createElement('div')
+    loadingMsg.className = 'ai-message assistant'
+    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
+    document.getElementById('aiMessages').appendChild(loadingMsg)
+    this.scrollAIToBottom()
+
+    try {
+      const reminderData = await this.parseReminderFromMessage(message)
+      console.log('📝 Parsed reminder data:', reminderData)
+      
+      if (!reminderData.title || !reminderData.reminderDateTime) {
+        loadingMsg.remove()
+        this.addAIMessage('❌ I couldn\'t understand when to remind you. Please specify a date and time!', 'assistant')
+        return
+      }
+
+      // Validate that reminder date is in the future
+      const reminderDate = new Date(reminderData.reminderDateTime)
+      const now = new Date()
+      
+      if (reminderDate <= now) {
+        loadingMsg.remove()
+        console.warn('⚠️ Reminder date is in the past:', reminderDate)
+        this.addAIMessage('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', 'assistant')
+        this.showNotification('Reminder must be in the future', '⚠️', 3000)
+        return
+      }
+
+      // Create the reminder
+      const reminder = {
+        id: Date.now(),
+        title: reminderData.title,
+        reminderDateTime: reminderData.reminderDateTime,
+        taskId: null,
+        completed: false,
+        createdDate: new Date().toISOString()
+      }
+
+      console.log('➕ Adding reminder to memory:', reminder)
+      this.reminders.unshift(reminder)
+      
+      console.log('💾 Saving reminder to database...')
+      await this.saveReminders()
+      
+      console.log('🎨 Rendering reminders...')
+      this.renderReminders()
+      
+      console.log('✅ Reminder created successfully!')
+      console.log('📊 Total reminders:', this.reminders.length)
+
+      loadingMsg.remove()
+      this.addAIMessage(`✅ Reminder set: "${reminder.title}" for ${new Date(reminderData.reminderDateTime).toLocaleString()}`, 'assistant')
+      this.showNotification(`Reminder set for ${new Date(reminderData.reminderDateTime).toLocaleString()}`, '⏰', 3000)
+    } catch (error) {
+      console.error('❌ Error creating reminder:', error)
+      loadingMsg.remove()
+      this.addAIMessage(`❌ Error creating reminder: ${error.message}`, 'assistant')
+    }
+  }
+
+  async parseReminderFromMessage(message) {
+    if (!this.aiApiKey) {
+      return this.parseReminderLocally(message)
+    }
+
+    // Rate limiting check
+    const now = Date.now()
+    const timeSinceLastCall = now - this.lastApiCall
+    
+    if (timeSinceLastCall < this.apiCallDelay) {
+      const waitTime = this.apiCallDelay - timeSinceLastCall
+      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+    }
+
+    this.lastApiCall = Date.now()
+
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.aiApiKey}`,
+          'HTTP-Referer': window.location.href,
+          'X-Title': 'TaskFlow'
+        },
+        body: JSON.stringify({
+          model: 'cerebras/llama3.1-8b',
+          messages: [
+            {
+              role: 'system',
+              content: `Extract reminder details from the user message. Return a JSON object with:
+- title (string, required): The reminder title
+- reminderDateTime (string, required): ISO 8601 format (YYYY-MM-DDTHH:mm:ss)
+
+Today's date is ${new Date().toISOString().split('T')[0]}. If the user says "tomorrow", add 1 day. If they say "in 2 hours", add 2 hours to current time.
+
+Only return valid JSON, no other text.`
+            },
+            {
+              role: 'user',
+              content: message
+            }
+          ],
+          max_tokens: 200,
+          temperature: 0.3
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        console.warn('API error, falling back to local parsing:', data)
+        return this.parseReminderLocally(message)
+      }
+
+      const content = data.choices?.[0]?.message?.content
+      if (!content) {
+        console.warn('No content in API response, falling back to local parsing')
+        return this.parseReminderLocally(message)
+      }
+
+      const reminderData = JSON.parse(content)
+      return reminderData
+    } catch (error) {
+      console.error('Reminder parsing error, falling back to local parsing:', error)
+      return this.parseReminderLocally(message)
+    }
+  }
+
+  parseReminderLocally(message) {
+    const lowerMessage = message.toLowerCase()
+    
+    // Extract title by removing common keywords and time/day information
+    let title = message
+      // Remove command phrases at the start
+      .replace(/^(can you|could you|please|i need|i want|would you)\s+/i, '')
+      .replace(/^(set|create|add|make)\s+(a\s+)?(reminder|remind me)\s*/i, '')
+      .replace(/^(reminder)\s+(for|about|to|at|on)\s*/i, '')
+      .replace(/^(remind me)\s+(for|about|to|at|on)?\s*/i, '')
+      // Remove day references
+      .replace(/\s*(tomorrow|today|bukas|ngayon)\s*/gi, ' ')
+      // Remove time references (6pm, 6:30pm, at 6pm, ng 6pm, etc.)
+      .replace(/\s*(at|ng|on|by)\s*\d{1,2}(:\d{2})?\s*(am|pm)?\s*/gi, ' ')
+      .replace(/\s*\d{1,2}(:\d{2})?\s*(am|pm)\s*/gi, ' ')
+      // Remove common prepositions that might be left over
+      .replace(/^(for|about|to)\s+/i, '')
+      // Clean up extra spaces
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    // Try to extract time
+    let reminderDateTime = new Date()
+    let timeSet = false
+    
+    // Check for specific time (6pm, 6:00pm, 18:00, etc.)
+    const timePattern = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i
+    const timeMatch = message.match(timePattern)
+    
+    if (timeMatch) {
+      let hours = parseInt(timeMatch[1])
+      const minutes = timeMatch[2] ? parseInt(timeMatch[2]) : 0
+      const meridiem = timeMatch[3] ? timeMatch[3].toLowerCase() : null
+      
+      // Convert to 24-hour format
+      if (meridiem === 'pm' && hours < 12) {
+        hours += 12
+      } else if (meridiem === 'am' && hours === 12) {
+        hours = 0
+      } else if (!meridiem && hours < 12) {
+        // If no AM/PM specified and hour is less than 12, assume PM if it's a reasonable time
+        hours += 12
+      }
+      
+      reminderDateTime.setHours(hours, minutes, 0, 0)
+      timeSet = true
+    }
+    
+    // Check for day (tomorrow, today, bukas, etc.)
+    if (lowerMessage.includes('tomorrow') || lowerMessage.includes('bukas')) {
+      reminderDateTime.setDate(reminderDateTime.getDate() + 1)
+      if (!timeSet) {
+        reminderDateTime.setHours(9, 0, 0, 0)
+      }
+    } else if (lowerMessage.includes('today') || lowerMessage.includes('ngayon')) {
+      if (!timeSet) {
+        reminderDateTime.setHours(9, 0, 0, 0)
+      }
+    } else if (lowerMessage.includes('in 1 hour')) {
+      reminderDateTime.setHours(reminderDateTime.getHours() + 1)
+    } else if (lowerMessage.includes('in 2 hours')) {
+      reminderDateTime.setHours(reminderDateTime.getHours() + 2)
+    } else if (!timeSet) {
+      // Default to 1 hour from now if no time specified
+      reminderDateTime.setHours(reminderDateTime.getHours() + 1)
+    }
+
+    console.log('📝 Parsed locally:', { 
+      original: message,
+      title: title || 'Reminder', 
+      reminderDateTime: reminderDateTime.toISOString() 
+    })
+
+    return {
+      title: title || 'Reminder',
+      reminderDateTime: reminderDateTime.toISOString()
+    }
+  }
+
   async handleAITaskCreation(message) {
     const loadingMsg = document.createElement('div')
     loadingMsg.className = 'ai-message assistant'
-    loadingMsg.innerHTML = '<p class="text-sm">🤔 Creating task...</p>'
+    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
     document.getElementById('aiMessages').appendChild(loadingMsg)
+    this.scrollAIToBottom()
 
     try {
       const taskData = await this.parseTaskFromMessage(message)
@@ -1310,7 +1962,7 @@ class TodoApp {
       }
 
       this.tasks.unshift(task)
-      this.saveTasks()
+      await this.saveTasks()
       this.render()
 
       loadingMsg.remove()
@@ -1326,6 +1978,18 @@ class TodoApp {
       return this.parseTaskLocally(message)
     }
 
+    // Rate limiting check
+    const now = Date.now()
+    const timeSinceLastCall = now - this.lastApiCall
+    
+    if (timeSinceLastCall < this.apiCallDelay) {
+      const waitTime = this.apiCallDelay - timeSinceLastCall
+      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+    }
+
+    this.lastApiCall = Date.now()
+
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -1336,7 +2000,7 @@ class TodoApp {
           'X-Title': 'TaskFlow'
         },
         body: JSON.stringify({
-          model: 'gpt-3.5-turbo',
+          model: 'cerebras/llama3.1-8b',
           messages: [
             {
               role: 'system',
@@ -1363,16 +2027,20 @@ Only return valid JSON, no other text.`
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error?.message || 'Failed to parse task')
+        console.warn('API error, falling back to local parsing:', data)
+        return this.parseTaskLocally(message)
       }
 
       const content = data.choices?.[0]?.message?.content
-      if (!content) throw new Error('No response from API')
+      if (!content) {
+        console.warn('No content in API response, falling back to local parsing')
+        return this.parseTaskLocally(message)
+      }
 
       const taskData = JSON.parse(content)
       return taskData
     } catch (error) {
-      console.error('Task parsing error:', error)
+      console.error('Task parsing error, falling back to local parsing:', error)
       return this.parseTaskLocally(message)
     }
   }
@@ -1381,9 +2049,17 @@ Only return valid JSON, no other text.`
     // Simple local parsing as fallback
     const lowerMessage = message.toLowerCase()
     
-    // Extract title by removing common keywords
+    // Extract title by removing common keywords and command phrases
     let title = message
-      .replace(/^(add|create|new|add a|create a|remind me to|i need to|i should|todo:|task:)\s*/i, '')
+      // Remove command phrases at the start
+      .replace(/^(can you|could you|please|i need|i want|would you)\s+/i, '')
+      .replace(/^(add|create|new|make)\s+(a\s+)?(task|todo)\s*/i, '')
+      .replace(/^(task|todo):\s*/i, '')
+      .replace(/^(remind me to|i need to|i should|i have to)\s*/i, '')
+      // Remove common prepositions that might be left over
+      .replace(/^(to|for)\s+/i, '')
+      // Clean up extra spaces
+      .replace(/\s+/g, ' ')
       .trim()
 
     // Detect priority
@@ -1402,8 +2078,15 @@ Only return valid JSON, no other text.`
       project = 'learning'
     }
 
+    console.log('📝 Parsed task locally:', {
+      original: message,
+      title: title || 'New Task',
+      priority,
+      project
+    })
+
     return {
-      title,
+      title: title || 'New Task',
       priority,
       project,
       notes: '',
@@ -1423,25 +2106,41 @@ Only return valid JSON, no other text.`
       return responses[Math.floor(Math.random() * responses.length)]
     }
 
+    // Rate limiting check
+    const now = Date.now()
+    const timeSinceLastCall = now - this.lastApiCall
+    
+    if (timeSinceLastCall < this.apiCallDelay) {
+      const waitTime = this.apiCallDelay - timeSinceLastCall
+      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+    }
+
+    this.lastApiCall = Date.now()
+
     const activeTasks = this.tasks.filter(t => !t.completed).length
     const completedTasks = this.tasks.filter(t => t.completed).length
-    const context = `User has ${activeTasks} active tasks and ${completedTasks} completed tasks.`
+    
+    // Get current date and time for context
+    const now2 = new Date()
+    const currentDate = now2.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    const currentTime = now2.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+    
+    const context = `User has ${activeTasks} active tasks and ${completedTasks} completed tasks. Current date and time: ${currentDate}, ${currentTime}.`
 
     try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.aiApiKey}`,
-          'HTTP-Referer': window.location.href,
-          'X-Title': 'TaskFlow'
+          'Authorization': `Bearer ${this.aiApiKey}`
         },
         body: JSON.stringify({
-          model: 'gpt-3.5-turbo',
+          model: 'llama3.1-8b',
           messages: [
             {
               role: 'system',
-              content: `You are a helpful productivity assistant for a todo app called TaskFlow. ${context} Be concise, encouraging, and helpful. Keep responses under 100 words.`
+              content: `You are a helpful productivity assistant for a todo app called TaskFlow. ${context} Be concise, encouraging, and helpful. Keep responses under 100 words. When users ask about the current date or time, use the date/time provided in the context above.`
             },
             {
               role: 'user',
@@ -1457,8 +2156,37 @@ Only return valid JSON, no other text.`
 
       if (!response.ok) {
         console.error('API Error:', data)
+        
+        // Handle rate limiting (429)
+        if (response.status === 429) {
+          this.apiRetryCount++
+          
+          if (this.apiRetryCount <= this.maxRetries) {
+            const retryDelay = this.apiCallDelay * this.apiRetryCount * 2 // Exponential backoff
+            console.log(`⏳ Rate limited. Retrying in ${retryDelay}ms (attempt ${this.apiRetryCount}/${this.maxRetries})`)
+            
+            await new Promise(resolve => setTimeout(resolve, retryDelay))
+            return await this.callOpenRouterAPI(message) // Retry
+          } else {
+            this.apiRetryCount = 0
+            throw new Error('Rate limit exceeded. Please wait a moment and try again.')
+          }
+        }
+        
+        // Handle other errors
+        if (response.status === 401) {
+          throw new Error('Invalid API key. Please check your configuration.')
+        }
+        
+        if (response.status === 402) {
+          throw new Error('Insufficient credits. Please add credits to your Cerebras account.')
+        }
+        
         throw new Error(data.error?.message || 'API request failed')
       }
+
+      // Reset retry count on success
+      this.apiRetryCount = 0
 
       if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
         return data.choices[0].message.content
@@ -1467,6 +2195,12 @@ Only return valid JSON, no other text.`
       throw new Error('Invalid API response format')
     } catch (error) {
       console.error('API Error Details:', error)
+      
+      // If it's a network error, provide helpful message
+      if (error.message.includes('fetch')) {
+        throw new Error('Network error. Please check your internet connection.')
+      }
+      
       throw error
     }
   }
@@ -1475,17 +2209,19 @@ Only return valid JSON, no other text.`
     const messagesContainer = document.getElementById('aiMessages')
     const messageEl = document.createElement('div')
     messageEl.className = `ai-message ${sender}`
-    messageEl.innerHTML = `<p class="text-sm">${message}</p>`
+    messageEl.innerHTML = `<p class="text-xs sm:text-sm">${message}</p>`
     messagesContainer.appendChild(messageEl)
     this.scrollAIToBottom()
   }
 
   scrollAIToBottom() {
-    const messagesContainer = document.querySelector('.flex-1.overflow-y-auto')
+    const aiPanel = document.getElementById('aiPanel')
+    const messagesContainer = aiPanel?.querySelector('.flex-1.overflow-y-auto')
     if (messagesContainer) {
-      setTimeout(() => {
+      // Use requestAnimationFrame for smoother scrolling
+      requestAnimationFrame(() => {
         messagesContainer.scrollTop = messagesContainer.scrollHeight
-      }, 0)
+      })
     }
   }
 
@@ -1571,7 +2307,12 @@ Only return valid JSON, no other text.`
   }
 
   // Task Management
-  deleteTask(id) {
+  async deleteTask(id) {
+    // Delete from Supabase first if user is logged in
+    if (this.currentUser) {
+      await this.deleteTaskFromSupabase(id)
+    }
+    
     this.tasks = this.tasks.filter(t => t.id !== id)
     this.saveTasks()
     this.render()
@@ -1588,6 +2329,8 @@ Only return valid JSON, no other text.`
       task.completed = !task.completed
       if (task.completed) {
         task.completedDate = new Date().toISOString().split('T')[0]
+      } else {
+        task.completedDate = null
       }
       this.saveTasks()
       this.render()
@@ -1627,9 +2370,13 @@ Only return valid JSON, no other text.`
   // Rendering
   render() {
     const tasksList = document.getElementById('tasksList')
-    if (!tasksList) return
+    if (!tasksList) {
+      console.warn('⚠️ tasksList element not found')
+      return
+    }
 
     const tasks = this.getFilteredTasks()
+    console.log('🎨 Rendering', tasks.length, 'tasks for filter:', this.currentFilter)
 
     if (tasks.length === 0) {
       tasksList.innerHTML = `
@@ -1827,26 +2574,44 @@ Only return valid JSON, no other text.`
         }
         
         if (existingTask) {
-          // Update existing task
-          const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${task.id}`, {
-            method: 'PATCH',
+          // Update existing task - use DELETE + INSERT instead of PATCH
+          console.log('Updating task in Supabase:', task.id)
+          
+          // Delete old record
+          await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${task.id}&user_id=eq.${this.currentUser.id}`, {
+            method: 'DELETE',
+            headers: {
+              'apikey': SUPABASE_KEY,
+              'Authorization': `Bearer ${token}`
+            }
+          })
+          
+          // Insert new record
+          const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
+            method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'apikey': SUPABASE_KEY,
               'Authorization': `Bearer ${token}`,
               'Prefer': 'return=minimal'
             },
-            body: JSON.stringify(taskData)
+            body: JSON.stringify({
+              id: task.id,
+              user_id: this.currentUser.id,
+              created_date: task.createdDate,
+              ...taskData
+            })
           })
           
           if (!response.ok) {
             const error = await response.json()
             console.error('Error updating task:', error)
           } else {
-            console.log('Task updated in Supabase:', task.title)
+            console.log('✅ Task updated in Supabase:', task.title)
           }
         } else {
           // Create new task
+          console.log('Creating new task in Supabase:', task.id)
           const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
             method: 'POST',
             headers: {
@@ -1868,7 +2633,7 @@ Only return valid JSON, no other text.`
             console.error('Error creating task:', error)
             console.error('Task data:', { id: task.id, user_id: this.currentUser.id, ...taskData })
           } else {
-            console.log('Task saved to Supabase:', task.title)
+            console.log('✅ Task saved to Supabase:', task.title)
           }
         }
       } catch (error) {
@@ -1902,32 +2667,196 @@ Only return valid JSON, no other text.`
     }
   }
 
-  async loadTasksFromSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) return []
+  async deleteTaskFromSupabase(taskId) {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('Cannot delete from Supabase: missing credentials or user')
+      return
+    }
 
     const token = localStorage.getItem('authToken')
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?user_id=eq.${this.currentUser.id}`, {
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
+    if (!token) {
+      console.warn('Cannot delete from Supabase: no auth token')
+      return
+    }
+
+    try {
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${taskId}&user_id=eq.${this.currentUser.id}`, {
+        method: 'DELETE',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('Error deleting task from Supabase:', error)
+        throw new Error('Failed to delete task from database')
+      } else {
+        console.log('Task deleted from Supabase:', taskId)
       }
-    })
+    } catch (error) {
+      console.error('Error in deleteTaskFromSupabase:', error)
+      throw error
+    }
+  }
 
-    if (!response.ok) return []
+  async updateTaskInSupabase(task) {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('Cannot update in Supabase: missing credentials or user')
+      return
+    }
 
-    const data = await response.json()
-    return data.map(t => ({
-      id: t.id,
-      title: t.title,
-      notes: t.notes || '',
-      completed: t.completed,
-      priority: t.priority,
-      project: t.project,
-      dueDate: t.due_date,
-      createdDate: t.created_date,
-      completedDate: t.completed_date,
-      labels: t.labels || []
-    }))
+    const token = localStorage.getItem('authToken')
+    if (!token) {
+      console.warn('Cannot update in Supabase: no auth token')
+      return
+    }
+
+    try {
+      const taskData = {
+        title: task.title,
+        notes: task.notes || '',
+        completed: task.completed,
+        priority: task.priority,
+        project: task.project,
+        due_date: task.dueDate,
+        completed_date: task.completedDate,
+        labels: task.labels && task.labels.length > 0 ? `{${task.labels.join(',')}}` : null
+      }
+
+      console.log('Updating task in Supabase:', task.id, taskData)
+      
+      // First check if task exists
+      const existingTask = await this.getTaskFromSupabase(task.id)
+      
+      if (!existingTask) {
+        // Task doesn't exist, create it instead
+        console.log('Task not found in DB, creating instead:', task.id)
+        const createResponse = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${token}`,
+            'Prefer': 'return=minimal'
+          },
+          body: JSON.stringify({
+            id: task.id,
+            user_id: this.currentUser.id,
+            created_date: task.createdDate,
+            ...taskData
+          })
+        })
+        
+        if (!createResponse.ok) {
+          const error = await createResponse.json()
+          console.error('Error creating task in Supabase:', error)
+          throw new Error('Failed to create task in database')
+        } else {
+          console.log('✅ Task created in Supabase:', task.title)
+        }
+        return
+      }
+      
+      // Task exists, update it
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${task.id}&user_id=eq.${this.currentUser.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${token}`,
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(taskData)
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('Error updating task in Supabase:', error)
+        console.error('Task ID:', task.id, 'User ID:', this.currentUser.id)
+        console.error('Task data:', taskData)
+        throw new Error('Failed to update task in database')
+      } else {
+        console.log('✅ Task updated in Supabase:', task.title)
+      }
+    } catch (error) {
+      console.error('Error in updateTaskInSupabase:', error)
+      throw error
+    }
+  }
+
+  async loadTasksFromSupabase() {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('Cannot load tasks: missing Supabase config or user')
+      return []
+    }
+
+    const token = localStorage.getItem('authToken')
+    if (!token) {
+      console.warn('Cannot load tasks: no auth token found')
+      // Try to refresh the session
+      await this.refreshSession()
+      return []
+    }
+
+    try {
+      console.log('🔄 Loading tasks for user:', this.currentUser.id)
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?user_id=eq.${this.currentUser.id}&select=*`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error(`❌ Failed to load tasks: ${response.status}`, errorData)
+        
+        // If 401, try to refresh session
+        if (response.status === 401) {
+          console.log('🔄 Auth token expired, attempting to refresh session...')
+          const refreshed = await this.refreshSession()
+          if (refreshed) {
+            // Retry loading tasks with new token
+            return await this.loadTasksFromSupabase()
+          } else {
+            console.error('❌ Session refresh failed, logging out...')
+            this.logout()
+            this.showNotification('Session expired. Please log in again.', '🔐', 3000)
+          }
+        }
+        return []
+      }
+
+      const data = await response.json()
+      console.log('✅ Loaded tasks from Supabase:', data.length, 'tasks')
+      
+      if (!Array.isArray(data)) {
+        console.error('Invalid response format for tasks:', data)
+        return []
+      }
+
+      const tasks = data.map(t => ({
+        id: t.id,
+        title: t.title || 'Untitled',
+        notes: t.notes || '',
+        completed: t.completed || false,
+        priority: t.priority || 'medium',
+        project: t.project || 'personal',
+        dueDate: t.due_date || '',
+        createdDate: t.created_date || new Date().toISOString().split('T')[0],
+        completedDate: t.completed_date || null,
+        labels: Array.isArray(t.labels) ? t.labels : []
+      }))
+      
+      console.log('📋 Parsed tasks:', tasks)
+      return tasks
+    } catch (error) {
+      console.error('❌ Error loading tasks from Supabase:', error)
+      return []
+    }
   }
 
   saveReminders() {
@@ -1947,48 +2876,100 @@ Only return valid JSON, no other text.`
   }
 
   async saveRemindersToSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) return
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('⚠️ Cannot save reminders: missing config or user')
+      return
+    }
 
     const token = localStorage.getItem('authToken')
+    if (!token) {
+      console.warn('⚠️ Cannot save reminders: no auth token')
+      return
+    }
+    
+    console.log('💾 Saving', this.reminders.length, 'reminders to Supabase...')
     
     for (const reminder of this.reminders) {
-      const existingReminder = await this.getReminderFromSupabase(reminder.id)
-      
-      if (existingReminder) {
-        // Update existing reminder
-        await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminder.id}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            title: reminder.title,
-            reminder_date_time: reminder.reminderDateTime,
-            completed: reminder.completed
+      try {
+        const existingReminder = await this.getReminderFromSupabase(reminder.id)
+        
+        const reminderData = {
+          title: reminder.title,
+          reminder_date_time: reminder.reminderDateTime,
+          completed: reminder.completed
+        }
+        
+        if (existingReminder) {
+          // Update existing reminder - use DELETE + INSERT instead of PATCH to avoid trigger issues
+          console.log('🔄 Updating reminder:', reminder.id)
+          
+          // Delete old record
+          await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminder.id}&user_id=eq.${this.currentUser.id}`, {
+            method: 'DELETE',
+            headers: {
+              'apikey': SUPABASE_KEY,
+              'Authorization': `Bearer ${token}`
+            }
           })
-        })
-      } else {
-        // Create new reminder
-        await fetch(`${SUPABASE_URL}/rest/v1/reminders`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            id: reminder.id,
-            user_id: this.currentUser.id,
-            title: reminder.title,
-            reminder_date_time: reminder.reminderDateTime,
-            completed: reminder.completed,
-            created_date: reminder.createdDate
+          
+          // Insert new record
+          const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_KEY,
+              'Authorization': `Bearer ${token}`,
+              'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify({
+              id: reminder.id,
+              user_id: this.currentUser.id,
+              created_date: reminder.createdDate,
+              ...reminderData
+            })
           })
-        })
+          
+          if (!response.ok) {
+            const error = await response.json()
+            console.error('❌ Error updating reminder:', error)
+          } else {
+            console.log('✅ Reminder updated:', reminder.title)
+          }
+        } else {
+          // Create new reminder
+          console.log('➕ Creating new reminder:', reminder.id)
+          const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_KEY,
+              'Authorization': `Bearer ${token}`,
+              'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify({
+              id: reminder.id,
+              user_id: this.currentUser.id,
+              title: reminder.title,
+              reminder_date_time: reminder.reminderDateTime,
+              completed: reminder.completed,
+              created_date: reminder.createdDate
+            })
+          })
+          
+          if (!response.ok) {
+            const error = await response.json()
+            console.error('❌ Error creating reminder:', error)
+            console.error('Reminder data:', { id: reminder.id, user_id: this.currentUser.id, ...reminderData })
+          } else {
+            console.log('✅ Reminder saved to Supabase:', reminder.title)
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error saving reminder to Supabase:', error)
       }
     }
+    
+    console.log('✅ All reminders saved to Supabase')
   }
 
   async getReminderFromSupabase(reminderId) {
@@ -2006,28 +2987,89 @@ Only return valid JSON, no other text.`
     return data[0] || null
   }
 
-  async loadRemindersFromSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) return []
+  async deleteReminderFromSupabase(reminderId) {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('Cannot delete reminder from Supabase: missing credentials or user')
+      return
+    }
 
     const token = localStorage.getItem('authToken')
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?user_id=eq.${this.currentUser.id}`, {
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
+    if (!token) {
+      console.warn('Cannot delete reminder from Supabase: no auth token')
+      return
+    }
+
+    try {
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminderId}&user_id=eq.${this.currentUser.id}`, {
+        method: 'DELETE',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('Error deleting reminder from Supabase:', error)
+      } else {
+        console.log('Reminder deleted from Supabase:', reminderId)
       }
-    })
+    } catch (error) {
+      console.error('Error in deleteReminderFromSupabase:', error)
+    }
+  }
 
-    if (!response.ok) return []
+  async loadRemindersFromSupabase() {
+    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
+      console.warn('⚠️ Cannot load reminders: missing Supabase config or user')
+      return []
+    }
 
-    const data = await response.json()
-    return data.map(r => ({
-      id: r.id,
-      title: r.title,
-      reminderDateTime: r.reminder_date_time,
-      taskId: r.task_id || null,
-      completed: r.completed,
-      createdDate: r.created_date
-    }))
+    const token = localStorage.getItem('authToken')
+    if (!token) {
+      console.warn('⚠️ Cannot load reminders: no auth token found')
+      return []
+    }
+
+    try {
+      console.log('🔄 Loading reminders for user:', this.currentUser.id)
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?user_id=eq.${this.currentUser.id}&select=*`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error(`❌ Failed to load reminders: ${response.status}`, errorData)
+        return []
+      }
+
+      const data = await response.json()
+      console.log('✅ Loaded reminders from Supabase:', data.length, 'reminders')
+      
+      if (!Array.isArray(data)) {
+        console.error('Invalid response format for reminders:', data)
+        return []
+      }
+
+      const reminders = data.map(r => ({
+        id: r.id,
+        title: r.title || 'Untitled Reminder',
+        reminderDateTime: r.reminder_date_time || new Date().toISOString(),
+        taskId: r.task_id || null,
+        completed: r.completed || false,
+        createdDate: r.created_date || new Date().toISOString()
+      }))
+      
+      console.log('📋 Parsed reminders:', reminders)
+      return reminders
+    } catch (error) {
+      console.error('❌ Error loading reminders from Supabase:', error)
+      return []
+    }
   }
 
   // Reminder System
@@ -2087,6 +3129,16 @@ Only return valid JSON, no other text.`
   }
 
   createReminder(title, reminderDateTime, taskId = null) {
+    // Validate that reminder date is in the future
+    const reminderDate = new Date(reminderDateTime)
+    const now = new Date()
+    
+    if (reminderDate <= now) {
+      console.warn('⚠️ Reminder date is in the past:', reminderDate)
+      this.showNotification('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', '⚠️', 4000)
+      return null
+    }
+    
     const reminder = {
       id: Date.now(),
       title,
@@ -2102,7 +3154,12 @@ Only return valid JSON, no other text.`
     return reminder
   }
 
-  deleteReminder(id) {
+  async deleteReminder(id) {
+    // Delete from Supabase first if user is logged in
+    if (this.currentUser) {
+      await this.deleteReminderFromSupabase(id)
+    }
+    
     this.reminders = this.reminders.filter(r => r.id !== id)
     this.saveReminders()
     this.showNotification('Reminder deleted', '🗑️', 2000)
@@ -2119,80 +3176,22 @@ Only return valid JSON, no other text.`
 
   getUpcomingReminders() {
     const now = new Date()
-    return this.reminders
+    console.log('📊 Total reminders in memory:', this.reminders.length)
+    const upcoming = this.reminders
       .filter(r => !r.completed && new Date(r.reminderDateTime) > now)
       .sort((a, b) => new Date(a.reminderDateTime) - new Date(b.reminderDateTime))
       .slice(0, 5)
+    console.log('📅 Upcoming reminders (not completed, future):', upcoming.length)
+    return upcoming
   }
 
   getDefaultTasks() {
-    const today = new Date().toISOString().split('T')[0]
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0]
-
-    return [
-      {
-        id: 1,
-        title: 'Complete project proposal',
-        notes: 'Include budget and timeline',
-        completed: false,
-        priority: 'high',
-        project: 'work',
-        dueDate: today,
-        createdDate: today,
-        completedDate: null,
-        labels: ['Urgent']
-      },
-      {
-        id: 2,
-        title: 'Review design mockups',
-        notes: 'Check mobile and desktop versions',
-        completed: false,
-        priority: 'medium',
-        project: 'work',
-        dueDate: tomorrow,
-        createdDate: today,
-        completedDate: null,
-        labels: []
-      },
-      {
-        id: 3,
-        title: 'Learn React hooks',
-        notes: 'Focus on useState and useEffect',
-        completed: false,
-        priority: 'medium',
-        project: 'learning',
-        dueDate: tomorrow,
-        createdDate: today,
-        completedDate: null,
-        labels: ['Development']
-      },
-      {
-        id: 4,
-        title: 'Gym session',
-        notes: 'Cardio and weights',
-        completed: true,
-        priority: 'low',
-        project: 'personal',
-        dueDate: today,
-        createdDate: today,
-        completedDate: today,
-        labels: ['Health']
-      },
-      {
-        id: 5,
-        title: 'Plan weekend trip',
-        notes: 'Book hotel and flights',
-        completed: false,
-        priority: 'low',
-        project: 'personal',
-        dueDate: new Date(Date.now() + 172800000).toISOString().split('T')[0],
-        createdDate: today,
-        completedDate: null,
-        labels: []
-      }
-    ]
+    // Return empty array - no demo tasks for non-authenticated users
+    return []
   }
 }
 
-// Initialize app
-new TodoApp()
+// Initialize app and expose to window for debugging
+const app = new TodoApp()
+window.app = app
+console.log('✅ TaskFlow app initialized and available as window.app')
