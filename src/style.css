@@ -689,21 +689,34 @@ html {
 
 /* Desktop layout */
 @media (min-width: 1024px) {
-  /* Show sidebar by default on desktop */
-  #sidebar {
-    display: flex !important;
+  /* App container should allow flex items to grow */
+  #app {
+    overflow: hidden;
   }
-
-  /* Smooth sidebar toggle - use margin instead of transform */
+  
+  /* Smooth sidebar toggle */
   #sidebar {
-    transition: margin-left 0.3s ease-in-out, opacity 0.3s ease-in-out;
+    transition: all 0.3s ease-in-out;
     position: relative;
+    flex-shrink: 0;
+    width: 18rem; /* w-72 = 18rem */
   }
 
   #sidebar.hidden {
-    margin-left: -18rem; /* -w-72 */
+    width: 0 !important;
+    min-width: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    overflow: hidden;
     opacity: 0;
-    pointer-events: none;
+  }
+  
+  /* Main content should flex to fill available space */
+  main {
+    transition: all 0.3s ease-in-out;
+    flex: 1;
+    min-width: 0;
   }
 
   /* AI Panel - Draggable chat box */
@@ -716,7 +729,6 @@ html {
     max-height: 28rem !important;
     border-radius: 1rem !important;
     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1) !important;
-    display: flex !important;
     flex-direction: column !important;
     z-index: 45 !important;
     cursor: grab;
@@ -792,6 +804,18 @@ html {
 
   #aiChatBubble.hidden {
     display: none !important;
+  }
+
+  /* Keep sidebar controls full-width in mobile/tablet layout */
+  #sidebar nav {
+    width: 100%;
+  }
+
+  #sidebar .nav-item,
+  #sidebar #openRemindersBtn,
+  #sidebar .project-item,
+  #sidebar #openAIBtn {
+    width: 100% !important;
   }
 }
 
@@ -895,8 +919,80 @@ html {
   transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-#sidebar.hidden {
-  animation: slideOutLeft 0.3s ease-in;
+/* Mobile sidebar - overlay with proper z-index */
+@media (max-width: 1024px) {
+  #sidebar {
+    position: fixed;
+    top: 48px;
+    left: 0;
+    width: 80vw;
+    max-width: 280px;
+    height: calc(100vh - 48px);
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease-out;
+    pointer-events: auto;
+    overflow-y: auto;
+    display: flex !important;
+    flex-direction: column;
+  }
+  
+  #sidebar.hidden {
+    transform: translateX(-100%);
+    pointer-events: none;
+  }
+
+  #sidebar:not(.hidden) {
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+  
+  #mobileOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 35;
+    top: 48px;
+  }
+  
+  #sidebar:not(.hidden) ~ #mobileOverlay,
+  body:has(#sidebar:not(.hidden)) #mobileOverlay {
+    display: block;
+  }
+
+  /* Reminders panel on mobile */
+  #remindersPanel {
+    position: fixed !important;
+    right: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: 100vh !important;
+    z-index: 50 !important;
+    border-radius: 0 !important;
+    pointer-events: auto !important;
+  }
+
+  #remindersPanel.hidden {
+    display: none !important;
+    pointer-events: none !important;
+  }
+
+  /* Ensure reminder buttons are clickable */
+  #remindersPanel button {
+    pointer-events: auto !important;
+  }
+
+  #remindersPanel .complete-reminder-btn,
+  #remindersPanel .delete-reminder-btn {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+  }
+
+  /* Reminder items should be clickable */
+  #remindersPanel .p-3 {
+    pointer-events: auto !important;
+  }
 }
 
 @keyframes slideOutLeft {
@@ -914,11 +1010,6 @@ html {
 #themeToggle,
 #themeToggleDesktop {
   transition: all 0.3s ease;
-}
-
-#themeToggle:hover,
-#themeToggleDesktop:hover {
-  transform: rotate(180deg) scale(1.1);
 }
 
 /* Reminder item animations */
@@ -960,5 +1051,58 @@ html {
   }
   100% {
     background-position: 0% 50%;
+  }
+}
+
+
+/* Additional mobile fixes */
+@media (max-width: 768px) {
+  /* Prevent horizontal scroll */
+  body, html {
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100vw;
+  }
+
+  /* Input fields - prevent iOS zoom */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  /* Buttons - touch target size */
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Fix scrolling on mobile */
+  .overflow-y-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Ensure proper touch feedback */
+  button, input, select, textarea {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Extra small devices */
+@media (max-width: 480px) {
+  /* Sidebar narrower */
+  #sidebar {
+    width: 70vw;
+    max-width: 240px;
+  }
+}
+
+/* Landscape mode adjustments */
+@media (max-height: 600px) and (orientation: landscape) {
+  #app {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  main {
+    max-height: calc(100vh - 48px);
   }
 }

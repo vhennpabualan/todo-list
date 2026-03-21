@@ -1,629 +1,485 @@
 import './style.css'
+import { DOMManager } from './core/DOMManager.js'
+import { APIClient } from './core/APIClient.js'
+import { PerformanceMonitor } from './core/PerformanceMonitor.js'
+import { MemoryManager } from './core/MemoryManager.js'
 
-// Supabase client setup
+// Supabase configuration
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || ''
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY || ''
 
-class TodoApp {
+/**
+ * Core Application Bootstrap
+ * 
+ * This is the minimal main.js that handles:
+ * - Core infrastructure initialization (DOMManager, APIClient, PerformanceMonitor, MemoryManager)
+ * - Theme management
+ * - Mobile menu
+ * - Notifications
+ * - Lazy loading of feature modules (Auth, AI, Reminders, Tasks)
+ * 
+ * Feature-specific code has been extracted to feature modules:
+ * - AuthModule: Authentication, login, signup, profile management
+ * - AIAssistant: AI chat interface
+ * - ReminderSystem: Reminders and notifications
+ * - TaskManager: Task CRUD operations
+ */
+class App {
   constructor() {
-    this.tasks = this.loadTasks()
-    this.reminders = this.loadReminders()
-    this.currentFilter = 'inbox'
-    this.isDarkMode = this.loadTheme()
-    this.aiMessages = []
-    this.aiApiKey = import.meta.env.VITE_CEREBRAS_API_KEY || ''
-    this.pendingDeleteId = null
-    this.editingTaskId = null
-    this.reminderCheckInterval = null
-    this.notifiedReminders = new Set()
+    // Core infrastructure
+    this.domManager = new DOMManager()
+    this.apiClient = new APIClient(SUPABASE_URL, SUPABASE_KEY)
+    this.performanceMonitor = new PerformanceMonitor()
+    this.memoryManager = new MemoryManager()
+
+    // Application state
     this.currentUser = null
-    this.isSignUpMode = false
-    this.lastApiCall = 0
-    this.apiCallDelay = 2000 // 2 seconds between API calls
-    this.apiRetryCount = 0
-    this.maxRetries = 3
-    this.setupAuthModal()
-    this.checkAuth()
+    this.isDarkMode = this.loadTheme()
+    this.pendingDeleteId = null
+
+    // Feature module caches
+    this.authModule = null
+    this.authModuleLoading = false
+    this.aiAssistant = null
+    this.aiAssistantLoading = false
+    this.reminderSystem = null
+    this.reminderSystemLoading = false
+    this.taskManager = null
+    this.taskManagerLoading = false
+
+    // Performance tracking
+    this.performanceMonitor.markStart('app-init')
   }
 
+  /**
+   * Initialize the application
+   */
+  async init() {
+    try {
+      // Initialize core infrastructure
+      this.domManager.init()
+      this.performanceMonitor.init()
+
+      // Set up performance budgets
+      this.performanceMonitor.setBudget('app-init', 2000)
+      this.performanceMonitor.setBudget('task-render', 50)
+      this.performanceMonitor.setBudget('task-create', 100)
+      this.performanceMonitor.setBudget('task-delete', 100)
+      this.performanceMonitor.setBudget('task-toggle', 100)
+      this.performanceMonitor.setBudget('load-auth-module', 200)
+      this.performanceMonitor.setBudget('load-ai-module', 200)
+      this.performanceMonitor.setBudget('load-reminders-module', 200)
+      this.performanceMonitor.setBudget('load-tasks-module', 200)
+
+      // Set up core UI features
+      this.setupThemeToggle()
+      this.setupMobileMenu()
+      this.setupNotifications()
+      this.setupDeleteModal()
+      this.setupLogout()
+      this.setupProfile()
+      this.setupAIEventBridge()
+
+      // Check authentication status
+      this.checkAuth()
+
+      // Load initial data
+      await this.loadUserData()
+
+      // Set up event listeners for feature triggers
+      await this.setupFeatureTriggers()
+
+      // Track initialization complete
+      this.performanceMonitor.markEnd('app-init')
+
+      console.log('✅ Application initialized')
+    } catch (error) {
+      console.error('❌ Failed to initialize application:', error)
+      this.showNotification('Failed to initialize application', '⚠️', 5000)
+    }
+  }
+
+  /**
+   * Check authentication status
+   */
   checkAuth() {
     const user = localStorage.getItem('user')
-    if (user) {
-      this.currentUser = JSON.parse(user)
-      this.showAuthenticatedUI()
+    const authToken = localStorage.getItem('authToken')
+    
+    // Validate that we have both user data and a valid token
+    if (user && authToken) {
+      try {
+        this.currentUser = JSON.parse(user)
+        this.showAuthenticatedUI()
+      } catch (error) {
+        console.error('Invalid user data in localStorage:', error)
+        this.clearAuthState()
+      }
     } else {
-      this.currentUser = null
-      this.hideAuthenticatedUI()
+      // Missing user or token - clear everything
+      this.clearAuthState()
     }
-    // Always initialize the app to allow browsing
-    this.init()
   }
 
+  /**
+   * Clear authentication state
+   */
+  clearAuthState() {
+    this.currentUser = null
+    localStorage.removeItem('user')
+    localStorage.removeItem('authToken')
+    localStorage.removeItem('refreshToken')
+    this.hideAuthenticatedUI()
+  }
+
+  /**
+   * Show authenticated UI elements
+   */
   showAuthenticatedUI() {
-    // Show logout and profile buttons
-    const logoutBtn = document.getElementById('logoutBtn')
-    const logoutBtnDesktop = document.getElementById('logoutBtnDesktop')
-    const profileBtn = document.getElementById('profileBtn')
-    const profileBtnDesktop = document.getElementById('profileBtnDesktop')
-    
+    const logoutBtn = this.domManager.get('logoutBtn')
+    const logoutBtnDesktop = this.domManager.get('logoutBtnDesktop')
+    const profileBtn = this.domManager.get('profileBtn')
+    const profileBtnDesktop = this.domManager.get('profileBtnDesktop')
+
     if (logoutBtn) logoutBtn.style.display = 'block'
     if (logoutBtnDesktop) logoutBtnDesktop.style.display = 'flex'
     if (profileBtn) profileBtn.style.display = 'block'
     if (profileBtnDesktop) profileBtnDesktop.style.display = 'flex'
   }
 
+  /**
+   * Hide authenticated UI elements
+   */
   hideAuthenticatedUI() {
-    // Hide logout and profile buttons when not logged in
-    const logoutBtn = document.getElementById('logoutBtn')
-    const logoutBtnDesktop = document.getElementById('logoutBtnDesktop')
-    const profileBtn = document.getElementById('profileBtn')
-    const profileBtnDesktop = document.getElementById('profileBtnDesktop')
-    
+    const logoutBtn = this.domManager.get('logoutBtn')
+    const logoutBtnDesktop = this.domManager.get('logoutBtnDesktop')
+    const profileBtn = this.domManager.get('profileBtn')
+    const profileBtnDesktop = this.domManager.get('profileBtnDesktop')
+
     if (logoutBtn) logoutBtn.style.display = 'none'
     if (logoutBtnDesktop) logoutBtnDesktop.style.display = 'none'
     if (profileBtn) profileBtn.style.display = 'none'
     if (profileBtnDesktop) profileBtnDesktop.style.display = 'none'
   }
 
-  showAuthModal() {
-    const modal = document.getElementById('authModal')
-    if (modal) {
-      modal.style.display = 'flex'
-      modal.classList.remove('hidden')
-    }
-  }
-
-  hideAuthModal() {
-    const modal = document.getElementById('authModal')
-    if (modal) {
-      modal.style.display = 'none'
-      modal.classList.add('hidden')
-    }
-  }
-
-  setupAuthModal() {
-    const closeBtn = document.getElementById('closeAuthModal')
-    const submitBtn = document.getElementById('authSubmitBtn')
-    const toggleBtn = document.getElementById('toggleAuthMode')
-    const emailInput = document.getElementById('authEmail')
-    const passwordInput = document.getElementById('authPassword')
-    const togglePasswordBtn = document.getElementById('togglePasswordBtn')
-    const eyeIcon = document.getElementById('eyeIcon')
-    const eyeOffIcon = document.getElementById('eyeOffIcon')
-
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => {
-        this.hideAuthModal()
-      })
-    }
-
-    if (submitBtn) {
-      submitBtn.addEventListener('click', () => this.handleAuth())
-    }
-
-    if (toggleBtn) {
-      toggleBtn.addEventListener('click', () => this.toggleAuthMode())
-    }
-
-    if (emailInput) {
-      emailInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') this.handleAuth()
-      })
-    }
-
-    if (passwordInput) {
-      passwordInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') this.handleAuth()
-      })
-    }
-
-    // Toggle password visibility
-    if (togglePasswordBtn && passwordInput && eyeIcon && eyeOffIcon) {
-      togglePasswordBtn.addEventListener('click', () => {
-        const isPassword = passwordInput.type === 'password'
-        passwordInput.type = isPassword ? 'text' : 'password'
-        eyeIcon.classList.toggle('hidden', isPassword)
-        eyeOffIcon.classList.toggle('hidden', !isPassword)
-        togglePasswordBtn.title = isPassword ? 'Hide password' : 'Show password'
-      })
-    }
-
-    // Allow closing modal by clicking outside
-    const authModal = document.getElementById('authModal')
-    if (authModal) {
-      authModal.addEventListener('click', (e) => {
-        if (e.target.id === 'authModal') {
-          this.hideAuthModal()
-        }
-      })
-    }
-  }
-
-  toggleAuthMode() {
-    this.isSignUpMode = !this.isSignUpMode
-    const title = document.getElementById('authModalTitle')
-    const submitBtn = document.getElementById('authSubmitBtn')
-    const toggleBtn = document.getElementById('toggleAuthMode')
-    const nameField = document.getElementById('nameField')
-
-    if (this.isSignUpMode) {
-      title.textContent = 'Create Account'
-      submitBtn.textContent = 'Sign Up'
-      toggleBtn.textContent = 'Already have an account? Sign In'
-      nameField.classList.remove('hidden')
-    } else {
-      title.textContent = 'Sign In'
-      submitBtn.textContent = 'Sign In'
-      toggleBtn.textContent = 'Create Account'
-      nameField.classList.add('hidden')
-    }
-    this.clearAuthError()
-  }
-
-  async handleAuth() {
-    const email = document.getElementById('authEmail').value.trim()
-    const password = document.getElementById('authPassword').value.trim()
-    const name = document.getElementById('authName').value.trim()
-
-    if (!email || !password) {
-      this.showAuthError('Please fill in all fields')
-      return
-    }
-
-    if (this.isSignUpMode && !name) {
-      this.showAuthError('Please enter your name')
-      return
-    }
-
-    this.setAuthLoading(true)
-
-    try {
-      if (this.isSignUpMode) {
-        await this.signUp(email, password, name)
-      } else {
-        await this.signIn(email, password)
-      }
-    } catch (error) {
-      this.showAuthError(error.message)
-    } finally {
-      this.setAuthLoading(false)
-    }
-  }
-
-  async signUp(email, password, name) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) {
-      throw new Error('Supabase credentials not configured')
-    }
-
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`
-      },
-      body: JSON.stringify({
-        email,
-        password,
-        data: {
-          name: name
-        }
-      })
-    })
-
-    const data = await response.json()
-    console.log('Sign up response:', data)
-
-    if (!response.ok) {
-      console.error('Sign up error:', data)
-      throw new Error(data.msg || data.message || data.error_description || 'Sign up failed')
-    }
-
-    // Store auth token and refresh token
-    const token = data.session?.access_token || data.access_token
-    const refreshToken = data.session?.refresh_token || data.refresh_token
-    
-    if (token) {
-      localStorage.setItem('authToken', token)
-      console.log('Auth token stored:', token.substring(0, 20) + '...')
-    } else {
-      console.error('No auth token in response:', data)
-    }
-    
-    if (refreshToken) {
-      localStorage.setItem('refreshToken', refreshToken)
-      console.log('Refresh token stored')
-    }
-
-    // Store user in database
-    if (data.user) {
-      await this.storeUserProfile(data.user.id, email, name)
-    }
-
-    this.currentUser = {
-      id: data.user.id,
-      email,
-      name
-    }
-    localStorage.setItem('user', JSON.stringify(this.currentUser))
-
-    this.hideAuthModal()
-    this.showAuthenticatedUI()
-    await this.loadUserData()
-    this.render()
-    this.showNotification('Account created successfully!', '✨', 2000)
-  }
-
-  async signIn(email, password) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) {
-      throw new Error('Supabase credentials not configured')
-    }
-
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`
-      },
-      body: JSON.stringify({
-        email,
-        password
-      })
-    })
-
-    const data = await response.json()
-    console.log('Sign in response:', data)
-
-    if (!response.ok) {
-      console.error('Sign in error:', data)
-      throw new Error(data.error_description || data.msg || data.message || 'Sign in failed')
-    }
-
-    // Store auth token and refresh token
-    const token = data.access_token || data.session?.access_token
-    const refreshToken = data.refresh_token || data.session?.refresh_token
-    
-    if (token) {
-      localStorage.setItem('authToken', token)
-      console.log('Auth token stored:', token.substring(0, 20) + '...')
-    } else {
-      console.error('No auth token in response:', data)
-    }
-    
-    if (refreshToken) {
-      localStorage.setItem('refreshToken', refreshToken)
-      console.log('Refresh token stored')
-    }
-
-    // Get user profile
-    const profile = await this.getUserProfile(data.user.id)
-
-    this.currentUser = {
-      id: data.user.id,
-      email: data.user.email,
-      name: profile?.name || email.split('@')[0]
-    }
-    localStorage.setItem('user', JSON.stringify(this.currentUser))
-
-    this.hideAuthModal()
-    this.showAuthenticatedUI()
-    await this.loadUserData()
-    this.render()
-    this.showNotification(`Welcome back, ${this.currentUser.name}!`, '👋', 2000)
-  }
-
-  async refreshSession() {
-    const refreshToken = localStorage.getItem('refreshToken')
-    if (!refreshToken || !SUPABASE_URL || !SUPABASE_KEY) {
-      console.warn('Cannot refresh session: missing refresh token or config')
-      return false
-    }
-
-    try {
-      console.log('🔄 Attempting to refresh session...')
-      const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${SUPABASE_KEY}`
-        },
-        body: JSON.stringify({
-          refresh_token: refreshToken
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.error('❌ Session refresh failed:', data)
-        return false
-      }
-
-      // Update tokens
-      const newToken = data.access_token || data.session?.access_token
-      const newRefreshToken = data.refresh_token || data.session?.refresh_token
-
-      if (newToken) {
-        localStorage.setItem('authToken', newToken)
-        console.log('✅ Auth token refreshed')
-      }
-
-      if (newRefreshToken) {
-        localStorage.setItem('refreshToken', newRefreshToken)
-        console.log('✅ Refresh token updated')
-      }
-
-      return true
-    } catch (error) {
-      console.error('❌ Error refreshing session:', error)
-      return false
-    }
-  }
-
-  async storeUserProfile(userId, email, name) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) return
-
-    const token = localStorage.getItem('authToken')
-    await fetch(`${SUPABASE_URL}/rest/v1/profiles`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        id: userId,
-        email,
-        name,
-        created_at: new Date().toISOString()
-      })
-    })
-  }
-
-  async getUserProfile(userId) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) return null
-
-    const token = localStorage.getItem('authToken')
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`, {
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
-      }
-    })
-
-    const data = await response.json()
-    return data[0] || null
-  }
-
-  async updateUserProfile(userId, updates) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) return null
-
-    const token = localStorage.getItem('authToken')
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify(updates)
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to update profile')
-    }
-
-    const data = await response.json()
-    return data[0] || null
-  }
-
-  logout() {
-    localStorage.removeItem('user')
-    localStorage.removeItem('authToken')
-    localStorage.removeItem('refreshToken')
-    localStorage.removeItem('todoTasks')
-    localStorage.removeItem('todoReminders')
-    this.currentUser = null
-    this.tasks = []
-    this.reminders = []
-    this.hideAuthenticatedUI()
-    this.render()
-    this.showNotification('Logged out successfully', '👋', 2000)
-  }
-
-  showAuthError(message) {
-    const errorDiv = document.getElementById('authError')
-    errorDiv.textContent = message
-    errorDiv.classList.remove('hidden')
-  }
-
-  clearAuthError() {
-    const errorDiv = document.getElementById('authError')
-    errorDiv.classList.add('hidden')
-  }
-
-  setAuthLoading(loading) {
-    const form = document.getElementById('authForm')
-    const loadingDiv = document.getElementById('authLoading')
-
-    if (loading) {
-      form.classList.add('hidden')
-      loadingDiv.classList.remove('hidden')
-    } else {
-      form.classList.remove('hidden')
-      loadingDiv.classList.add('hidden')
-    }
-  }
-
-  async init() {
-    this.applyTheme()
-    this.setupThemeToggle()
-    this.setupMobileMenu()
-    this.setupFloatingTaskModal()
-    this.setupDeleteModal()
-    this.setupNotifications()
-    this.setupAIAssistant()
-    this.setupAIPanelDrag()
-    this.setupAIChatBubbleDrag()
-    this.setupRemindersPanel()
-    this.setupOutsideClickHandler()
-    this.setupEventListeners()
-    this.setupReminderSystem()
-    this.setupLogout()
-    this.requestNotificationPermission()
-    this.updateDate()
-    await this.loadUserData()
-    this.render()
-    this.generateAIGreeting()
-  }
-
+  /**
+   * Load user data from Supabase
+   */
   async loadUserData() {
+    if (!this.currentUser) return
+
     try {
-      if (this.currentUser) {
-        console.log('📥 Loading user data for:', this.currentUser.id)
-        const [tasks, reminders] = await Promise.all([
-          this.loadTasksFromSupabase(),
-          this.loadRemindersFromSupabase()
-        ])
-        this.tasks = tasks
-        this.reminders = reminders
-        console.log('✅ Loaded:', this.tasks.length, 'tasks and', this.reminders.length, 'reminders')
-      } else {
-        // Load demo tasks for non-authenticated users
-        console.log('👤 No user logged in, loading demo tasks')
-        this.tasks = this.getDefaultTasks()
-        this.reminders = []
+      // Load user profile
+      const userProfile = await this.apiClient.get('profiles', {
+        id: this.currentUser.id
+      })
+
+      if (userProfile && userProfile.length > 0) {
+        this.currentUser = { ...this.currentUser, ...userProfile[0] }
+        localStorage.setItem('user', JSON.stringify(this.currentUser))
       }
     } catch (error) {
-      console.error('❌ Error in loadUserData:', error)
-      this.tasks = this.getDefaultTasks()
-      this.reminders = []
+      console.error('Failed to load user data:', error)
+      
+      // If we get a 401, the token is invalid - clear auth state
+      if (error.message && error.message.includes('401')) {
+        console.log('Authentication expired, clearing session...')
+        this.clearAuthState()
+        this.showNotification('Session expired. Please log in again.', '🔒', 5000)
+      }
     }
   }
 
-  setupLogout() {
-    // Mobile logout button
-    const logoutBtn = document.getElementById('logoutBtn')
-    if (logoutBtn) {
-      logoutBtn.addEventListener('click', () => this.showLogoutModal())
+  /**
+   * Set up feature module triggers
+   * These listeners trigger lazy loading of feature modules on demand
+   */
+  async setupFeatureTriggers() {
+    // Auth module trigger - load immediately if not authenticated
+    if (!this.currentUser) {
+      try {
+        await this.loadAuthModule()
+      } catch (error) {
+        console.error('Failed to load AuthModule on startup:', error)
+      }
     }
 
-    // Desktop logout button
-    const logoutBtnDesktop = document.getElementById('logoutBtnDesktop')
-    if (logoutBtnDesktop) {
-      logoutBtnDesktop.addEventListener('click', () => this.showLogoutModal())
+    // AI module trigger - only add listener once
+    const aiBtn = this.domManager.get('openAIBtn')
+    if (aiBtn && !aiBtn.dataset.aiTriggerAttached) {
+      const aiTriggerHandler = async (e) => {
+        e.stopPropagation()
+        await this.loadAIAssistantModule()
+        // Show the AI panel after loading
+        const aiPanel = this.domManager.get('aiPanel')
+        const aiOverlay = this.domManager.get('aiOverlay')
+        const aiChatBubble = this.domManager.get('aiChatBubble')
+        const taskModal = this.domManager.get('taskModal')
+        
+        if (taskModal) {
+          taskModal.classList.add('hidden')
+          taskModal.style.display = 'none'
+        }
+        if (aiPanel) {
+          aiPanel.classList.remove('hidden')
+          aiPanel.style.display = 'flex'
+        }
+        if (window.innerWidth < 1024) {
+          if (aiOverlay) aiOverlay.classList.remove('hidden')
+          if (aiChatBubble) aiChatBubble.classList.add('hidden')
+        }
+      }
+      aiBtn.addEventListener('click', aiTriggerHandler)
+      this.memoryManager.registerListener(aiBtn, 'click', aiTriggerHandler, 'ai-trigger')
+      aiBtn.dataset.aiTriggerAttached = 'true'
     }
 
-    // Logout modal buttons
-    const cancelLogoutBtn = document.getElementById('cancelLogoutBtn')
-    if (cancelLogoutBtn) {
-      cancelLogoutBtn.addEventListener('click', () => this.closeLogoutModal())
+    // Reminders module trigger - only add listener once
+    const remindersBtn = this.domManager.get('openRemindersBtn')
+    if (remindersBtn && !remindersBtn.dataset.remindersTriggerAttached) {
+      const remindersTriggerHandler = async (e) => {
+        e.stopPropagation()
+        await this.loadReminderSystemModule()
+        // Show the reminders panel after loading
+        const remindersPanel = this.domManager.get('remindersPanel')
+        if (remindersPanel) {
+          remindersPanel.classList.remove('hidden')
+          remindersPanel.style.display = 'flex'
+        }
+      }
+      remindersBtn.addEventListener('click', remindersTriggerHandler)
+      this.memoryManager.registerListener(remindersBtn, 'click', remindersTriggerHandler, 'reminders-trigger')
+      remindersBtn.dataset.remindersTriggerAttached = 'true'
     }
 
-    const confirmLogoutBtn = document.getElementById('confirmLogoutBtn')
-    if (confirmLogoutBtn) {
-      confirmLogoutBtn.addEventListener('click', () => {
-        this.closeLogoutModal()
-        this.logout()
-      })
-    }
-
-    const logoutModal = document.getElementById('logoutModal')
-    if (logoutModal) {
-      logoutModal.addEventListener('click', (e) => {
-        if (e.target.id === 'logoutModal') this.closeLogoutModal()
-      })
-    }
-
-    // Mobile profile button
-    const profileBtn = document.getElementById('profileBtn')
-    if (profileBtn) {
-      profileBtn.addEventListener('click', () => this.openProfileModal())
-    }
-
-    // Desktop profile button
-    const profileBtnDesktop = document.getElementById('profileBtnDesktop')
-    if (profileBtnDesktop) {
-      profileBtnDesktop.addEventListener('click', () => this.openProfileModal())
-    }
-
-    const closeProfileBtn = document.getElementById('closeProfileModal')
-    if (closeProfileBtn) {
-      closeProfileBtn.addEventListener('click', () => this.closeProfileModal())
-    }
-
-    const saveProfileBtn = document.getElementById('saveProfileBtn')
-    if (saveProfileBtn) {
-      saveProfileBtn.addEventListener('click', () => this.saveProfileChanges())
-    }
-
-    const profileModal = document.getElementById('profileModal')
-    if (profileModal) {
-      profileModal.addEventListener('click', (e) => {
-        if (e.target.id === 'profileModal') this.closeProfileModal()
-      })
-    }
-  }
-
-  showLogoutModal() {
-    const modal = document.getElementById('logoutModal')
-    if (modal) {
-      modal.classList.remove('hidden')
-      modal.style.display = 'flex'
+    // Tasks module trigger (load immediately as it's core functionality)
+    try {
+      await this.loadTaskManagerModule()
+    } catch (error) {
+      console.error('Failed to load TaskManager on startup:', error)
     }
   }
 
-  closeLogoutModal() {
-    const modal = document.getElementById('logoutModal')
-    if (modal) {
-      modal.classList.add('hidden')
-      modal.style.display = 'none'
-    }
-  }
-
-  openProfileModal() {
-    const modal = document.getElementById('profileModal')
-    if (!modal) return
-
-    document.getElementById('profileName').value = this.currentUser.name || ''
-    document.getElementById('profileEmail').textContent = this.currentUser.email
-    modal.classList.remove('hidden')
-    modal.style.display = 'flex'
-  }
-
-  closeProfileModal() {
-    const modal = document.getElementById('profileModal')
-    if (modal) {
-      modal.classList.add('hidden')
-      modal.style.display = 'none'
-    }
-  }
-
-  async saveProfileChanges() {
-    const newName = document.getElementById('profileName').value.trim()
-
-    if (!newName) {
-      this.showNotification('Name cannot be empty', '⚠️', 3000)
-      return
-    }
+  /**
+   * Lazy load AuthModule
+   */
+  async loadAuthModule() {
+    if (this.authModuleLoading) return
+    if (this.authModule) return this.authModule
 
     try {
-      await this.updateUserProfile(this.currentUser.id, { name: newName })
-      this.currentUser.name = newName
-      localStorage.setItem('user', JSON.stringify(this.currentUser))
-      this.showNotification('Profile updated successfully!', '✨', 2000)
-      this.closeProfileModal()
+      this.authModuleLoading = true
+      console.log('🔐 Loading AuthModule...')
+
+      this.performanceMonitor.markStart('load-auth-module')
+
+      const { AuthModule } = await import('./features/AuthModule.js')
+
+      this.authModule = new AuthModule(
+        this.apiClient,
+        this.domManager,
+        this.memoryManager,
+        {
+          onAuthStateChange: (user) => {
+            this.currentUser = user
+            if (user) {
+              this.showAuthenticatedUI()
+            } else {
+              this.hideAuthenticatedUI()
+            }
+          },
+          onUserDataLoad: async () => {
+            await this.loadUserData()
+          },
+          showNotification: (message, icon, duration) => {
+            this.showNotification(message, icon, duration)
+          }
+        }
+      )
+
+      this.authModule.init()
+
+      this.performanceMonitor.markEnd('load-auth-module')
+
+      console.log('✅ AuthModule loaded successfully')
+      return this.authModule
     } catch (error) {
-      this.showNotification('Failed to update profile: ' + error.message, '❌', 3000)
+      console.error('❌ Failed to load AuthModule:', error)
+      this.showNotification(
+        'Failed to load authentication module. Please refresh the page.',
+        '⚠️',
+        5000
+      )
+      throw error
+    } finally {
+      this.authModuleLoading = false
     }
   }
 
-  // Theme Management
+  /**
+   * Lazy load AIAssistant module
+   */
+  async loadAIAssistantModule() {
+    if (this.aiAssistantLoading) return
+    if (this.aiAssistant) return this.aiAssistant
+
+    try {
+      this.aiAssistantLoading = true
+      console.log('🤖 Loading AIAssistant module...')
+
+      this.performanceMonitor.markStart('load-ai-module')
+
+      const { AIAssistant } = await import('./features/AIAssistant.js')
+      const { AnimationEngine } = await import('./utils/AnimationEngine.js')
+      const { StorageManager } = await import('./utils/StorageManager.js')
+
+      const animationEngine = new AnimationEngine()
+      const storageManager = new StorageManager()
+
+      // Load tasks and reminders from storage
+      const tasks = storageManager.get('tasks') || []
+      const reminders = storageManager.get('reminders') || []
+
+      this.aiAssistant = new AIAssistant(
+        this.apiClient,
+        this.domManager,
+        animationEngine,
+        this.memoryManager,
+        (message, icon, duration) => this.showNotification(message, icon, duration)
+      )
+
+      // Initialize with current app state
+      this.aiAssistant.init(tasks, reminders, this.currentUser)
+
+      this.performanceMonitor.markEnd('load-ai-module')
+
+      console.log('✅ AIAssistant module loaded successfully')
+      return this.aiAssistant
+    } catch (error) {
+      console.error('❌ Failed to load AIAssistant module:', error)
+      this.showNotification(
+        'Failed to load AI assistant. Please refresh the page.',
+        '⚠️',
+        5000
+      )
+      throw error
+    } finally {
+      this.aiAssistantLoading = false
+    }
+  }
+
+  /**
+   * Lazy load ReminderSystem module
+   */
+  async loadReminderSystemModule() {
+    if (this.reminderSystemLoading) return
+    if (this.reminderSystem) return this.reminderSystem
+
+    try {
+      this.reminderSystemLoading = true
+      console.log('🔔 Loading ReminderSystem module...')
+
+      this.performanceMonitor.markStart('load-reminders-module')
+
+      const { ReminderSystem } = await import('./features/ReminderSystem.js')
+      const { StorageManager } = await import('./utils/StorageManager.js')
+
+      const storageManager = new StorageManager()
+
+      // Load reminders from storage
+      const reminders = storageManager.get('reminders') || []
+
+      this.reminderSystem = new ReminderSystem(
+        this.apiClient,
+        this.domManager,
+        this.memoryManager,
+        storageManager,
+        (message, icon, duration) => this.showNotification(message, icon, duration)
+      )
+
+      this.reminderSystem.init(reminders)
+
+      this.performanceMonitor.markEnd('load-reminders-module')
+
+      console.log('✅ ReminderSystem module loaded successfully')
+      return this.reminderSystem
+    } catch (error) {
+      console.error('❌ Failed to load ReminderSystem module:', error)
+      this.showNotification(
+        'Failed to load reminder system. Please refresh the page.',
+        '⚠️',
+        5000
+      )
+      throw error
+    } finally {
+      this.reminderSystemLoading = false
+    }
+  }
+
+  /**
+   * Load TaskManager module (core functionality, loaded immediately)
+   */
+  async loadTaskManagerModule() {
+    if (this.taskManagerLoading) return
+    if (this.taskManager) return this.taskManager
+
+    try {
+      this.taskManagerLoading = true
+      console.log('📋 Loading TaskManager module...')
+
+      this.performanceMonitor.markStart('load-tasks-module')
+
+      const { TaskManager } = await import('./features/TaskManager.js')
+      const { AnimationEngine } = await import('./utils/AnimationEngine.js')
+      const { StorageManager } = await import('./utils/StorageManager.js')
+
+      const animationEngine = new AnimationEngine()
+      const storageManager = new StorageManager()
+
+      // Load tasks from storage
+      const tasks = storageManager.get('tasks') || []
+
+      this.taskManager = new TaskManager(
+        this.apiClient,
+        this.domManager,
+        animationEngine,
+        storageManager,
+        this.memoryManager,
+        (message, icon, duration) => this.showNotification(message, icon, duration),
+        this.performanceMonitor
+      )
+
+      this.taskManager.init(tasks, 'inbox', this.currentUser)
+
+      this.performanceMonitor.markEnd('load-tasks-module')
+
+      console.log('✅ TaskManager module loaded successfully')
+      return this.taskManager
+    } catch (error) {
+      console.error('❌ Failed to load TaskManager module:', error)
+      this.showNotification(
+        'Failed to load task manager. Please refresh the page.',
+        '⚠️',
+        5000
+      )
+      throw error
+    } finally {
+      this.taskManagerLoading = false
+    }
+  }
+
+  /**
+   * Theme Management
+   */
   loadTheme() {
     const saved = localStorage.getItem('theme')
-    return saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
+    if (!saved) return false
+    try {
+      return JSON.parse(saved)
+    } catch {
+      // Handle legacy "dark" string format
+      return saved === 'dark'
+    }
   }
 
   applyTheme() {
@@ -633,2565 +489,461 @@ class TodoApp {
     } else {
       html.classList.remove('dark')
     }
-    this.updateThemeLabel()
   }
 
   setupThemeToggle() {
-    const toggles = [
-      document.getElementById('themeToggle'),
-      document.getElementById('themeToggleDesktop')
-    ]
+    this.applyTheme()
+    const themeToggle = this.domManager.get('themeToggle')
+    if (themeToggle) {
+      themeToggle.addEventListener('click', () => this.toggleTheme())
+      this.memoryManager.registerListener(themeToggle, 'click', () => this.toggleTheme(), 'theme')
+    }
 
-    toggles.forEach(toggle => {
-      if (toggle) {
-        toggle.addEventListener('click', () => this.toggleTheme())
-      }
-    })
+    // Desktop theme toggle
+    const themeToggleDesktop = this.domManager.get('themeToggleDesktop')
+    if (themeToggleDesktop) {
+      themeToggleDesktop.addEventListener('click', () => this.toggleTheme())
+      this.memoryManager.registerListener(themeToggleDesktop, 'click', () => this.toggleTheme(), 'theme-desktop')
+    }
   }
 
   toggleTheme() {
     this.isDarkMode = !this.isDarkMode
-    localStorage.setItem('theme', this.isDarkMode ? 'dark' : 'light')
+    localStorage.setItem('theme', JSON.stringify(this.isDarkMode))
     this.applyTheme()
+    this.updateThemeLabel()
   }
 
   updateThemeLabel() {
-    const label = document.getElementById('themeLabel')
+    const label = document.querySelector('[data-theme-label]')
     if (label) {
-      label.textContent = this.isDarkMode ? 'Light Mode' : 'Dark Mode'
+      label.textContent = this.isDarkMode ? '☀️' : '🌙'
     }
   }
 
-  // Delete Modal - INDEPENDENT
-  setupDeleteModal() {
-    const deleteModal = document.getElementById('deleteModal')
-    const cancelBtn = document.getElementById('cancelDeleteBtn')
-    const confirmBtn = document.getElementById('confirmDeleteBtn')
-
-    if (cancelBtn) {
-      cancelBtn.addEventListener('click', () => {
-        this.pendingDeleteId = null
-        deleteModal.classList.add('hidden')
-        deleteModal.style.display = 'none'
-      })
-    }
-
-    if (confirmBtn) {
-      confirmBtn.addEventListener('click', () => {
-        if (this.pendingDeleteId) {
-          this.deleteTask(this.pendingDeleteId)
-          this.pendingDeleteId = null
-          deleteModal.classList.add('hidden')
-          deleteModal.style.display = 'none'
-          this.showNotification('Task deleted successfully', '🗑️')
-        }
-      })
-    }
-
-    if (deleteModal) {
-      deleteModal.addEventListener('click', (e) => {
-        if (e.target.id === 'deleteModal') {
-          this.pendingDeleteId = null
-          deleteModal.classList.add('hidden')
-          deleteModal.style.display = 'none'
-        }
-      })
-    }
-
-    // Reminder modal setup
-    const reminderModal = document.getElementById('reminderModal')
-    const closeReminderBtn = document.getElementById('closeReminderModal')
-    const createReminderBtn = document.getElementById('createReminderBtn')
-
-    if (closeReminderBtn) {
-      closeReminderBtn.addEventListener('click', () => {
-        reminderModal.classList.add('hidden')
-        reminderModal.style.display = 'none'
-        this.clearReminderForm()
-      })
-    }
-
-    if (createReminderBtn) {
-      createReminderBtn.addEventListener('click', () => this.createReminderFromModal())
-    }
-
-    if (reminderModal) {
-      reminderModal.addEventListener('click', (e) => {
-        if (e.target.id === 'reminderModal') {
-          reminderModal.classList.add('hidden')
-          reminderModal.style.display = 'none'
-          this.clearReminderForm()
-        }
-      })
-    }
-  }
-
-  showDeleteConfirm(taskId) {
-    if (!this.currentUser) {
-      this.showAuthModal()
-      this.showNotification('Please log in to delete tasks', '🔐', 3000)
-      return
-    }
-    this.pendingDeleteId = taskId
-    const deleteModal = document.getElementById('deleteModal')
-    deleteModal.classList.remove('hidden')
-    deleteModal.style.display = 'flex'
-    deleteModal.style.zIndex = '60'
-  }
-
-  // Notifications
-  setupNotifications() {
-    const closeBtn = document.getElementById('closeNotification')
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => this.hideNotification())
-    }
-  }
-
-  showNotification(message, icon = '✓', duration = 3000) {
-    const toast = document.getElementById('notificationToast')
-    const text = document.getElementById('notificationText')
-    const iconEl = document.getElementById('notificationIcon')
-
-    if (text) text.textContent = message
-    if (iconEl) iconEl.textContent = icon
-    if (toast) toast.classList.remove('hidden')
-
-    if (duration > 0) {
-      setTimeout(() => this.hideNotification(), duration)
-    }
-  }
-
-  hideNotification() {
-    const toast = document.getElementById('notificationToast')
-    if (toast) toast.classList.add('hidden')
-  }
-
-  // Mobile Menu
+  /**
+   * Mobile Menu
+   */
   setupMobileMenu() {
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn')
-    const desktopMenuBtn = document.getElementById('desktopMenuBtn')
-    const sidebar = document.getElementById('sidebar')
-    const closeSidebarBtn = document.getElementById('closeSidebarBtn')
-    const closeSidebarBtnMobile = document.getElementById('closeSidebarBtnMobile')
-    const mobileOverlay = document.getElementById('mobileOverlay')
+    const menuToggle = this.domManager.get('mobileMenuBtn')
+    const sidebar = this.domManager.get('sidebar')
+    const desktopMenuBtn = this.domManager.get('desktopMenuBtn')
+    const closeSidebarBtn = this.domManager.get('closeSidebarBtnMobile')
+    const mobileOverlay = this.domManager.get('mobileOverlay')
 
-    // Mobile menu button
-    if (mobileMenuBtn) {
-      mobileMenuBtn.addEventListener('click', () => {
-        sidebar.classList.remove('hidden')
-        mobileOverlay.classList.remove('hidden')
-      })
+    // Ensure sidebar is hidden on mobile on initial load
+    if (window.innerWidth < 1024 && sidebar) {
+      sidebar.classList.add('hidden')
+      if (mobileOverlay) {
+        mobileOverlay.classList.add('hidden')
+      }
     }
 
-    // Desktop menu button (hamburger)
-    if (desktopMenuBtn) {
+    // Mobile menu toggle
+    if (menuToggle && sidebar) {
+      menuToggle.addEventListener('click', (e) => {
+        e.stopPropagation()
+        sidebar.classList.toggle('hidden')
+        if (mobileOverlay) {
+          mobileOverlay.classList.toggle('hidden')
+        }
+        const aiPanel = this.domManager.get('aiPanel')
+        const firstNavItem = document.querySelector('.nav-item')
+        if (aiPanel && firstNavItem) {
+          // Additional logic here if needed
+        }
+      })
+      this.memoryManager.registerListener(menuToggle, 'click', (e) => {
+        e.stopPropagation()
+        sidebar.classList.toggle('hidden')
+        if (mobileOverlay) {
+          mobileOverlay.classList.toggle('hidden')
+        }
+      }, 'mobile-menu')
+    }
+
+    // Mobile close button
+    if (closeSidebarBtn && sidebar) {
+      closeSidebarBtn.addEventListener('click', () => {
+        sidebar.classList.add('hidden')
+        if (mobileOverlay) {
+          mobileOverlay.classList.add('hidden')
+        }
+      })
+      this.memoryManager.registerListener(closeSidebarBtn, 'click', () => {
+        sidebar.classList.add('hidden')
+        if (mobileOverlay) {
+          mobileOverlay.classList.add('hidden')
+        }
+      }, 'mobile-menu')
+    }
+
+    // Desktop menu button - toggle sidebar visibility
+    if (desktopMenuBtn && sidebar) {
       desktopMenuBtn.addEventListener('click', () => {
         sidebar.classList.toggle('hidden')
       })
+      this.memoryManager.registerListener(desktopMenuBtn, 'click', () => {
+        sidebar.classList.toggle('hidden')
+      }, 'desktop-menu')
     }
 
-    // Close sidebar button (desktop)
-    if (closeSidebarBtn) {
-      closeSidebarBtn.addEventListener('click', () => {
-        sidebar.classList.add('hidden')
-      })
-    }
-
-    // Close sidebar button (mobile)
-    if (closeSidebarBtnMobile) {
-      closeSidebarBtnMobile.addEventListener('click', () => {
+    // Close sidebar when clicking overlay
+    if (mobileOverlay && sidebar) {
+      mobileOverlay.addEventListener('click', () => {
         sidebar.classList.add('hidden')
         mobileOverlay.classList.add('hidden')
       })
+      this.memoryManager.registerListener(mobileOverlay, 'click', () => {
+        sidebar.classList.add('hidden')
+        mobileOverlay.classList.add('hidden')
+      }, 'mobile-overlay')
     }
 
-    // Mobile overlay click
+    // Close overlays when clicked
+    const aiOverlay = this.domManager.get('aiOverlay')
+
     if (mobileOverlay) {
       mobileOverlay.addEventListener('click', () => {
         sidebar.classList.add('hidden')
         mobileOverlay.classList.add('hidden')
       })
-    }
-
-    // Auto-close on mobile when clicking nav items
-    sidebar.querySelectorAll('button, a').forEach(item => {
-      item.addEventListener('click', () => {
-        if (window.innerWidth < 1024) {
-          sidebar.classList.add('hidden')
-          mobileOverlay.classList.add('hidden')
-        }
-      })
-    })
-  }
-
-  // Floating Task Modal
-  setupFloatingTaskModal() {
-    const floatingBtn = document.getElementById('floatingAddBtn')
-    const modal = document.getElementById('taskModal')
-    const closeBtn = document.getElementById('closeTaskModal')
-    const addBtn = document.getElementById('modalAddTaskBtn')
-    const input = document.getElementById('modalTaskInput')
-
-    if (floatingBtn) {
-      floatingBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        document.getElementById('aiPanel').classList.add('hidden')
-        document.getElementById('aiPanel').style.display = 'none'
-        document.getElementById('aiOverlay').classList.add('hidden')
-        this.openTaskModal()
-      })
-    }
-
-    if (closeBtn) {
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        this.closeTaskModal()
-      })
-    }
-
-    if (addBtn) {
-      addBtn.addEventListener('click', () => this.addTaskFromModal())
-    }
-
-    if (input) {
-      input.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && e.ctrlKey) this.addTaskFromModal()
-      })
-    }
-
-    if (modal) {
-      modal.addEventListener('click', (e) => {
-        // Only close if clicking the background, not the modal content
-        if (e.target.id === 'taskModal') this.closeTaskModal()
-      })
-    }
-  }
-
-  openTaskModal() {
-    const modal = document.getElementById('taskModal')
-    if (modal) {
-      modal.classList.remove('hidden')
-      modal.style.display = 'flex'
-      document.getElementById('modalTaskInput').focus()
-    }
-  }
-
-  closeTaskModal() {
-    const modal = document.getElementById('taskModal')
-    if (modal) {
-      modal.classList.add('hidden')
-      modal.style.display = 'none'
-      this.clearModalForm()
-    }
-  }
-
-  clearModalForm() {
-    document.getElementById('modalTaskInput').value = ''
-    document.getElementById('modalTaskNotes').value = ''
-    document.getElementById('modalProjectSelect').value = 'personal'
-    document.getElementById('modalPrioritySelect').value = 'medium'
-    document.getElementById('modalDueDateInput').value = ''
-    
-    // Reset modal header and button
-    document.querySelector('#taskModal h2').textContent = 'Create New Task'
-    document.getElementById('modalAddTaskBtn').textContent = 'Create Task'
-    this.editingTaskId = null
-  }
-
-  addTaskFromModal() {
-    const title = document.getElementById('modalTaskInput').value.trim()
-    const notes = document.getElementById('modalTaskNotes').value.trim()
-    const project = document.getElementById('modalProjectSelect').value
-    const priority = document.getElementById('modalPrioritySelect').value
-    const dueDate = document.getElementById('modalDueDateInput').value
-
-    if (!title) {
-      this.showNotification('Please enter a task title', '⚠️', 3000)
-      return
-    }
-
-    // Validate due date if provided
-    if (dueDate) {
-      const taskDueDate = new Date(dueDate)
-      const today = new Date()
-      today.setHours(0, 0, 0, 0) // Reset time to start of day for fair comparison
-      
-      if (taskDueDate < today) {
-        console.warn('⚠️ Task due date is in the past:', taskDueDate)
-        this.showNotification('⚠️ Warning: Due date is in the past. Consider choosing a future date.', '⚠️', 4000)
-        // Don't return - allow saving but warn user
-      }
-    }
-
-    // Require authentication to save tasks
-    if (!this.currentUser) {
-      this.closeTaskModal()
-      this.showAuthModal()
-      this.showNotification('Please log in to save tasks', '🔐', 3000)
-      return
-    }
-
-    if (this.editingTaskId) {
-      // Update existing task
-      const task = this.tasks.find(t => t.id === this.editingTaskId)
-      if (task) {
-        task.title = title
-        task.notes = notes
-        task.project = project
-        task.priority = priority
-        task.dueDate = dueDate || task.dueDate
-      }
-      this.editingTaskId = null
-      this.showNotification('Task updated successfully!', '✏️', 2000)
-    } else {
-      // Create new task
-      const task = {
-        id: Date.now(),
-        title,
-        notes,
-        completed: false,
-        priority,
-        project,
-        dueDate: dueDate || new Date().toISOString().split('T')[0],
-        createdDate: new Date().toISOString().split('T')[0],
-        completedDate: null,
-        labels: []
-      }
-      this.tasks.unshift(task)
-      this.showNotification('Task created successfully!', '✨', 2000)
-    }
-
-    this.saveTasks()
-    this.closeTaskModal()
-    this.render()
-  }
-
-  editTask(id) {
-    if (!this.currentUser) {
-      this.showAuthModal()
-      this.showNotification('Please log in to edit tasks', '🔐', 3000)
-      return
-    }
-    const task = this.tasks.find(t => t.id === id)
-    if (task) {
-      this.editingTaskId = id
-      document.getElementById('modalTaskInput').value = task.title
-      document.getElementById('modalTaskNotes').value = task.notes || ''
-      document.getElementById('modalProjectSelect').value = task.project
-      document.getElementById('modalPrioritySelect').value = task.priority
-      document.getElementById('modalDueDateInput').value = task.dueDate
-      
-      // Update modal header and button
-      document.querySelector('#taskModal h2').textContent = 'Edit Task'
-      document.getElementById('modalAddTaskBtn').textContent = 'Update Task'
-      
-      this.openTaskModal()
-    }
-  }
-
-  // AI Assistant
-  setupAIAssistant() {
-    const openAIBtn = document.getElementById('openAIBtn')
-    const closeAIBtn = document.getElementById('closeAIBtn')
-    const minimizeAIBtn = document.getElementById('minimizeAIBtn')
-    const aiChatBubble = document.getElementById('aiChatBubble')
-    const clearChatBtn = document.getElementById('clearChatBtn')
-    const clearChatBtnDesktop = document.getElementById('clearChatBtnDesktop')
-    const aiPanel = document.getElementById('aiPanel')
-    const aiOverlay = document.getElementById('aiOverlay')
-    const aiSendBtn = document.getElementById('aiSendBtn')
-    const aiInput = document.getElementById('aiInput')
-    const floatingAddBtn = document.getElementById('floatingAddBtn')
-
-    if (openAIBtn) {
-      openAIBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        document.getElementById('taskModal').classList.add('hidden')
-        document.getElementById('taskModal').style.display = 'none'
-        aiPanel.classList.remove('hidden')
-        aiPanel.style.display = 'flex'
-        if (window.innerWidth < 1024) {
-          aiOverlay.classList.remove('hidden')
-          aiChatBubble.classList.add('hidden')
-        }
-        this.checkApiKey()
-        this.scrollAIToBottom()
-      })
-    }
-
-    if (closeAIBtn) {
-      closeAIBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        aiPanel.classList.add('hidden')
-        aiPanel.style.display = 'none'
-        aiOverlay.classList.add('hidden')
-        if (window.innerWidth < 1024) {
-          aiChatBubble.classList.remove('hidden')
-        }
-      })
-    }
-
-    if (minimizeAIBtn) {
-      minimizeAIBtn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        aiPanel.classList.add('hidden')
-        aiPanel.style.display = 'none'
-        aiOverlay.classList.add('hidden')
-        aiChatBubble.classList.remove('hidden')
-      })
-    }
-
-    if (aiChatBubble) {
-      aiChatBubble.addEventListener('click', (e) => {
-        e.stopPropagation()
-        aiPanel.classList.remove('hidden')
-        aiPanel.style.display = 'flex'
-        aiOverlay.classList.remove('hidden')
-        aiChatBubble.classList.add('hidden')
-        this.scrollAIToBottom()
-      })
-    }
-
-    if (clearChatBtn) {
-      clearChatBtn.addEventListener('click', () => this.clearAIChat())
-    }
-
-    if (clearChatBtnDesktop) {
-      clearChatBtnDesktop.addEventListener('click', () => this.clearAIChat())
+      this.memoryManager.registerListener(mobileOverlay, 'click', () => {
+        sidebar.classList.add('hidden')
+        mobileOverlay.classList.add('hidden')
+      }, 'mobile-overlay')
     }
 
     if (aiOverlay) {
-      aiOverlay.addEventListener('click', (e) => {
-        if (e.target === aiOverlay) {
-          aiPanel.classList.add('hidden')
-          aiPanel.style.display = 'none'
-          aiOverlay.classList.add('hidden')
-          if (window.innerWidth < 1024) {
-            aiChatBubble.classList.remove('hidden')
-          }
-        }
+      aiOverlay.addEventListener('click', () => {
+        const aiPanel = this.domManager.get('aiPanel')
+        if (aiPanel) aiPanel.classList.add('hidden')
+        aiOverlay.classList.add('hidden')
       })
+      this.memoryManager.registerListener(aiOverlay, 'click', () => {
+        const aiPanel = this.domManager.get('aiPanel')
+        if (aiPanel) aiPanel.classList.add('hidden')
+        aiOverlay.classList.add('hidden')
+      }, 'ai-overlay')
     }
 
-    if (aiSendBtn && aiInput) {
-      aiSendBtn.addEventListener('click', () => this.sendAIMessage())
-      aiInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') this.sendAIMessage()
-      })
-    }
-  }
-  setupAIPanelDrag() {
-    const aiPanel = document.getElementById('aiPanel')
-    const header = aiPanel?.querySelector('div:first-child')
-
-    if (!aiPanel || !header || window.innerWidth < 1024) return
-
-    let isDragging = false
-    let currentX
-    let currentY
-    let initialX
-    let initialY
-
-    header.addEventListener('mousedown', (e) => {
-      // Don't drag if clicking on buttons or their children
-      if (e.target.closest('button')) return
-      
-      isDragging = true
-      initialX = e.clientX - aiPanel.offsetLeft
-      initialY = e.clientY - aiPanel.offsetTop
-      aiPanel.classList.add('dragging')
-      e.preventDefault()
-    })
-
-    const handleMouseMove = (e) => {
-      if (!isDragging) return
-
-      currentX = e.clientX - initialX
-      currentY = e.clientY - initialY
-
-      // Keep panel within viewport bounds
-      const maxX = window.innerWidth - aiPanel.offsetWidth
-      const maxY = window.innerHeight - aiPanel.offsetHeight
-
-      currentX = Math.max(0, Math.min(currentX, maxX))
-      currentY = Math.max(0, Math.min(currentY, maxY))
-
-      aiPanel.style.position = 'fixed'
-      aiPanel.style.left = currentX + 'px'
-      aiPanel.style.right = 'auto'
-      aiPanel.style.top = currentY + 'px'
-      aiPanel.style.bottom = 'auto'
-    }
-
-    const handleMouseUp = () => {
-      isDragging = false
-      aiPanel.classList.remove('dragging')
-    }
-
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-
-    // Re-enable drag on window resize if still on desktop
+    // Handle window resize for responsive behavior
     window.addEventListener('resize', () => {
-      if (window.innerWidth < 1024) {
-        isDragging = false
-        aiPanel.classList.remove('dragging')
+      if (window.innerWidth >= 1024) {
+        // Desktop view - show sidebar
+        if (sidebar) sidebar.classList.remove('hidden')
+        if (mobileOverlay) mobileOverlay.classList.add('hidden')
+      } else {
+        // Mobile view - hide sidebar
+        if (sidebar) sidebar.classList.add('hidden')
+        if (mobileOverlay) mobileOverlay.classList.add('hidden')
       }
     })
   }
 
-  setupAIChatBubbleDrag() {
-    const aiChatBubble = document.getElementById('aiChatBubble')
-
-    if (!aiChatBubble) return
-
-    let isDragging = false
-    let currentX
-    let currentY
-    let initialX
-    let initialY
-    let startX
-    let startY
-    const dragThreshold = 10 // pixels to move before considering it a drag
-
-    aiChatBubble.addEventListener('touchstart', (e) => {
-      const touch = e.touches[0]
-      startX = touch.clientX
-      startY = touch.clientY
-      initialX = touch.clientX - aiChatBubble.offsetLeft
-      initialY = touch.clientY - aiChatBubble.offsetTop
-      isDragging = false
-    }, { passive: true })
-
-    aiChatBubble.addEventListener('touchmove', (e) => {
-      const touch = e.touches[0]
-      const deltaX = Math.abs(touch.clientX - startX)
-      const deltaY = Math.abs(touch.clientY - startY)
-      
-      // Only start dragging if moved beyond threshold
-      if (deltaX > dragThreshold || deltaY > dragThreshold) {
-        isDragging = true
-        aiChatBubble.classList.add('dragging')
-        
-        currentX = touch.clientX - initialX
-        currentY = touch.clientY - initialY
-
-        // Keep bubble within viewport bounds
-        const maxX = window.innerWidth - aiChatBubble.offsetWidth
-        const maxY = window.innerHeight - aiChatBubble.offsetHeight
-
-        currentX = Math.max(0, Math.min(currentX, maxX))
-        currentY = Math.max(0, Math.min(currentY, maxY))
-
-        aiChatBubble.style.position = 'fixed'
-        aiChatBubble.style.left = currentX + 'px'
-        aiChatBubble.style.right = 'auto'
-        aiChatBubble.style.top = currentY + 'px'
-        aiChatBubble.style.bottom = 'auto'
-      }
-    }, { passive: true })
-
-    aiChatBubble.addEventListener('touchend', (e) => {
-      aiChatBubble.classList.remove('dragging')
-      
-      // If didn't drag, treat as click
-      if (!isDragging) {
-        const aiPanel = document.getElementById('aiPanel')
-        const aiOverlay = document.getElementById('aiOverlay')
-        aiPanel.classList.remove('hidden')
-        aiPanel.style.display = 'flex'
-        aiOverlay.classList.remove('hidden')
-        aiChatBubble.classList.add('hidden')
-        this.scrollAIToBottom()
-      }
-      isDragging = false
-    })
-
-    // Mouse events for desktop testing only
-    aiChatBubble.addEventListener('mousedown', (e) => {
-      if (window.innerWidth >= 1024) return
-      
-      startX = e.clientX
-      startY = e.clientY
-      initialX = e.clientX - aiChatBubble.offsetLeft
-      initialY = e.clientY - aiChatBubble.offsetTop
-      isDragging = false
-      e.preventDefault()
-    })
-
-    const handleMouseMove = (e) => {
-      if (window.innerWidth >= 1024) return
-      
-      const deltaX = Math.abs(e.clientX - startX)
-      const deltaY = Math.abs(e.clientY - startY)
-      
-      // Only start dragging if moved beyond threshold
-      if (deltaX > dragThreshold || deltaY > dragThreshold) {
-        isDragging = true
-        aiChatBubble.classList.add('dragging')
-
-        currentX = e.clientX - initialX
-        currentY = e.clientY - initialY
-
-        // Keep bubble within viewport bounds
-        const maxX = window.innerWidth - aiChatBubble.offsetWidth
-        const maxY = window.innerHeight - aiChatBubble.offsetHeight
-
-        currentX = Math.max(0, Math.min(currentX, maxX))
-        currentY = Math.max(0, Math.min(currentY, maxY))
-
-        aiChatBubble.style.position = 'fixed'
-        aiChatBubble.style.left = currentX + 'px'
-        aiChatBubble.style.right = 'auto'
-        aiChatBubble.style.top = currentY + 'px'
-        aiChatBubble.style.bottom = 'auto'
-      }
-    }
-
-    const handleMouseUp = (e) => {
-      if (window.innerWidth >= 1024) return
-      
-      aiChatBubble.classList.remove('dragging')
-      
-      // If didn't drag, treat as click
-      if (!isDragging) {
-        const aiPanel = document.getElementById('aiPanel')
-        const aiOverlay = document.getElementById('aiOverlay')
-        aiPanel.classList.remove('hidden')
-        aiPanel.style.display = 'flex'
-        aiOverlay.classList.remove('hidden')
-        aiChatBubble.classList.add('hidden')
-        this.scrollAIToBottom()
-      }
-      isDragging = false
-      
-      // Remove listeners after mouseup
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-    }
-
-    aiChatBubble.addEventListener('mousedown', (e) => {
-      if (window.innerWidth >= 1024) return
-      
-      startX = e.clientX
-      startY = e.clientY
-      initialX = e.clientX - aiChatBubble.offsetLeft
-      initialY = e.clientY - aiChatBubble.offsetTop
-      isDragging = false
-      
-      // Add listeners only when mouse is down on bubble
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
-      
-      e.preventDefault()
-    })
+  /**
+   * Notifications
+   */
+  setupNotifications() {
+    // Notification system is ready
+    console.log('📢 Notifications system initialized')
   }
 
-  // Close AI panel when clicking outside on main content
-  setupOutsideClickHandler() {
-    const app = document.getElementById('app')
-    const aiPanel = document.getElementById('aiPanel')
-    const aiOverlay = document.getElementById('aiOverlay')
+  showNotification(message, icon = '✓', duration = 3000) {
+    const toast = this.domManager.get('notificationToast')
+    if (!toast) return
 
-    if (app) {
-      app.addEventListener('click', (e) => {
-        // Check if AI panel is open and click is outside the panel
-        if (!aiPanel.classList.contains('hidden')) {
-          const isClickInsidePanel = aiPanel.contains(e.target)
-          const isClickOnOpenBtn = e.target.closest('#openAIBtn')
-          const isClickOnFloatingBtn = e.target.closest('#floatingAddBtn')
-          const isClickOnTaskModal = e.target.closest('#taskModal')
-          const isClickOnDeleteModal = e.target.closest('#deleteModal')
+    const messageEl = toast.querySelector('.notification-message')
+    const iconEl = toast.querySelector('.notification-icon')
 
-          // Close panel if click is outside and not on buttons that open other UI
-          if (!isClickInsidePanel && !isClickOnOpenBtn && !isClickOnFloatingBtn && !isClickOnTaskModal && !isClickOnDeleteModal) {
-            aiPanel.classList.add('hidden')
-            aiPanel.style.display = 'none'
-            aiOverlay.classList.add('hidden')
-            document.getElementById('floatingAddBtn').classList.remove('ai-panel-open')
-          }
+    if (messageEl) messageEl.textContent = message
+    if (iconEl) iconEl.textContent = icon
+
+    toast.classList.remove('hidden')
+    toast.style.display = 'flex'
+
+    if (duration > 0) {
+      const timeoutId = setTimeout(() => this.hideNotification(), duration)
+      this.memoryManager.registerTimeout(timeoutId, 'notifications')
+    }
+  }
+
+  hideNotification() {
+    const toast = this.domManager.get('notificationToast')
+    if (toast) {
+      toast.classList.add('hidden')
+      toast.style.display = 'none'
+    }
+  }
+
+  /**
+   * Delete Modal
+   */
+  setupDeleteModal() {
+    const deleteConfirmBtn = this.domManager.get('confirmDeleteBtn')
+    const deleteCancelBtn = this.domManager.get('cancelDeleteBtn')
+
+    if (deleteConfirmBtn) {
+      deleteConfirmBtn.addEventListener('click', () => this.confirmDelete())
+      this.memoryManager.registerListener(deleteConfirmBtn, 'click', () => this.confirmDelete(), 'delete-modal')
+    }
+
+    if (deleteCancelBtn) {
+      deleteCancelBtn.addEventListener('click', () => this.closeDeleteModal())
+      this.memoryManager.registerListener(deleteCancelBtn, 'click', () => this.closeDeleteModal(), 'delete-modal')
+    }
+  }
+
+  showDeleteConfirm(taskId) {
+    this.pendingDeleteId = taskId
+    const modal = this.domManager.get('deleteModal')
+    if (modal) {
+      modal.classList.remove('hidden')
+      modal.style.display = 'flex'
+    }
+  }
+
+  closeDeleteModal() {
+    this.pendingDeleteId = null
+    const modal = this.domManager.get('deleteModal')
+    if (modal) {
+      modal.classList.add('hidden')
+      modal.style.display = 'none'
+    }
+  }
+
+  confirmDelete() {
+    if (this.taskManager && this.pendingDeleteId) {
+      this.taskManager.deleteTask(this.pendingDeleteId)
+      this.closeDeleteModal()
+    }
+  }
+
+  /**
+   * Logout
+   */
+  setupLogout() {
+    const logoutBtn = this.domManager.get('logoutBtn')
+    const logoutBtnDesktop = this.domManager.get('logoutBtnDesktop')
+
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', () => this.showLogoutModal())
+      this.memoryManager.registerListener(logoutBtn, 'click', () => this.showLogoutModal(), 'logout')
+    }
+
+    if (logoutBtnDesktop) {
+      logoutBtnDesktop.addEventListener('click', () => this.showLogoutModal())
+      this.memoryManager.registerListener(logoutBtnDesktop, 'click', () => this.showLogoutModal(), 'logout')
+    }
+  }
+
+  showLogoutModal() {
+    const modal = this.domManager.get('logoutModal')
+    if (modal) {
+      modal.classList.remove('hidden')
+      modal.style.display = 'flex'
+    }
+
+    const confirmBtn = this.domManager.get('confirmLogoutBtn')
+    const cancelBtn = this.domManager.get('cancelLogoutBtn')
+
+    if (confirmBtn) {
+      // Remove old listeners to prevent duplicates
+      confirmBtn.onclick = null
+      confirmBtn.onclick = () => this.logout()
+    }
+    if (cancelBtn) {
+      // Remove old listeners to prevent duplicates
+      cancelBtn.onclick = null
+      cancelBtn.onclick = () => this.closeLogoutModal()
+    }
+  }
+
+  closeLogoutModal() {
+    const modal = this.domManager.get('logoutModal')
+    if (modal) {
+      modal.classList.add('hidden')
+      modal.style.display = 'none'
+    }
+  }
+
+  logout() {
+    // Cleanup all modules
+    if (this.authModule) this.authModule.cleanup()
+    if (this.aiAssistant) this.aiAssistant.cleanup()
+    if (this.reminderSystem) this.reminderSystem.cleanup()
+    if (this.taskManager) this.taskManager.cleanup()
+
+    localStorage.removeItem('user')
+    localStorage.removeItem('authToken')
+    this.currentUser = null
+    this.hideAuthenticatedUI()
+    this.closeLogoutModal()
+    this.showNotification('Logged out successfully', '✓', 3000)
+    // Reload to reset all modules
+    window.location.reload()
+  }
+
+  /**
+   * Profile
+   */
+  setupProfile() {
+    const profileBtn = this.domManager.get('profileBtn')
+    const profileBtnDesktop = this.domManager.get('profileBtnDesktop')
+
+    if (profileBtn) {
+      profileBtn.addEventListener('click', () => this.showProfileModal())
+      this.memoryManager.registerListener(profileBtn, 'click', () => this.showProfileModal(), 'profile')
+    }
+
+    if (profileBtnDesktop) {
+      profileBtnDesktop.addEventListener('click', () => this.showProfileModal())
+      this.memoryManager.registerListener(profileBtnDesktop, 'click', () => this.showProfileModal(), 'profile')
+    }
+  }
+
+  /**
+   * Bridge AI-created entities to core managers/storage
+   */
+  setupAIEventBridge() {
+    const onAITaskCreated = (event) => {
+      const task = event?.detail
+      if (!task || !task.id) return
+
+      if (this.taskManager) {
+        const exists = this.taskManager.tasks.some((t) => t.id === task.id)
+        if (!exists) {
+          this.taskManager.tasks.unshift(task)
+          this.taskManager.saveTasks()
+          this.taskManager.render()
         }
-      })
-    }
-  }
-
-  setupRemindersPanel() {
-    const addReminderBtn = document.getElementById('addReminderBtn')
-    const closeRemindersBtn = document.getElementById('closeRemindersPanel')
-    const remindersPanel = document.getElementById('remindersPanel')
-    const reminderModal = document.getElementById('reminderModal')
-
-    if (addReminderBtn) {
-      addReminderBtn.addEventListener('click', () => {
-        reminderModal.classList.remove('hidden')
-        reminderModal.style.display = 'flex'
-        document.getElementById('reminderTitleInput').focus()
-      })
-    }
-
-    if (closeRemindersBtn) {
-      closeRemindersBtn.addEventListener('click', () => {
-        remindersPanel.classList.add('hidden')
-        remindersPanel.style.display = 'none'
-      })
-    }
-
-    this.renderReminders()
-  }
-
-  openRemindersPanel() {
-    const remindersPanel = document.getElementById('remindersPanel')
-    remindersPanel.classList.remove('hidden')
-    remindersPanel.style.display = 'flex'
-    this.renderReminders()
-  }
-
-  clearReminderForm() {
-    document.getElementById('reminderTitleInput').value = ''
-    document.getElementById('reminderDateInput').value = ''
-    document.getElementById('reminderTimeInput').value = ''
-  }
-
-  createReminderFromModal() {
-    const title = document.getElementById('reminderTitleInput').value.trim()
-    const date = document.getElementById('reminderDateInput').value
-    const time = document.getElementById('reminderTimeInput').value
-
-    if (!title || !date || !time) {
-      this.showNotification('Please fill in all fields', '⚠️', 3000)
-      return
-    }
-
-    const reminderDateTime = `${date}T${time}`
-    
-    // Validate that reminder date is in the future
-    const reminderDate = new Date(reminderDateTime)
-    const now = new Date()
-    
-    if (reminderDate <= now) {
-      console.warn('⚠️ Reminder date is in the past:', reminderDate)
-      this.showNotification('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', '⚠️', 4000)
-      return
-    }
-    
-    this.createReminder(title, reminderDateTime)
-    this.clearReminderForm()
-    
-    const reminderModal = document.getElementById('reminderModal')
-    reminderModal.classList.add('hidden')
-    reminderModal.style.display = 'none'
-    
-    this.renderReminders()
-  }
-
-  renderReminders() {
-    const remindersList = document.getElementById('remindersList')
-    if (!remindersList) {
-      console.warn('⚠️ remindersList element not found')
-      return
-    }
-
-    const reminders = this.getUpcomingReminders()
-    console.log('🎨 Rendering', reminders.length, 'upcoming reminders')
-
-    if (reminders.length === 0) {
-      remindersList.innerHTML = `
-        <div class="text-center py-8">
-          <p class="text-3xl mb-2">📭</p>
-          <p class="text-sm text-light-600 dark:text-dark-400">No upcoming reminders</p>
-        </div>
-      `
-    } else {
-      remindersList.innerHTML = reminders.map(reminder => {
-        const reminderDate = new Date(reminder.reminderDateTime)
-        const now = new Date()
-        const timeDiff = reminderDate - now
-        const daysLeft = Math.floor(timeDiff / (1000 * 60 * 60 * 24))
-        const hoursLeft = Math.floor((timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-        const minutesLeft = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60))
-        const isOverdue = timeDiff < 0
-
-        let timeDisplay = ''
-        if (isOverdue) {
-          const absDiff = Math.abs(timeDiff)
-          const overdueMins = Math.floor(absDiff / (1000 * 60))
-          const overdueHours = Math.floor(absDiff / (1000 * 60 * 60))
-          const overdueDays = Math.floor(absDiff / (1000 * 60 * 60 * 24))
-          
-          if (overdueDays > 0) {
-            timeDisplay = `${overdueDays}d ${overdueHours % 24}h overdue`
-          } else if (overdueHours > 0) {
-            timeDisplay = `${overdueHours}h ${overdueMins % 60}m overdue`
-          } else {
-            timeDisplay = `${overdueMins}m overdue`
-          }
-        } else {
-          if (daysLeft > 0) {
-            timeDisplay = `${daysLeft}d ${hoursLeft}h ${minutesLeft}m left`
-          } else if (hoursLeft > 0) {
-            timeDisplay = `${hoursLeft}h ${minutesLeft}m left`
-          } else {
-            timeDisplay = `${minutesLeft}m left`
-          }
-        }
-
-        return `
-          <div class="p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg ${isOverdue ? 'animate-pulse border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20' : ''}">
-            <div class="flex items-start justify-between gap-2">
-              <div class="flex-1 min-w-0">
-                <p class="font-medium text-sm text-light-900 dark:text-white truncate">${reminder.title}</p>
-                <p class="text-xs ${isOverdue ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-orange-600 dark:text-orange-400'} mt-1">
-                  ${reminderDate.toLocaleString()} (${timeDisplay})
-                </p>
-              </div>
-              <div class="flex gap-1 flex-shrink-0">
-                ${isOverdue ? '<span class="px-2 py-1 bg-red-500 text-white text-xs rounded font-bold animate-pulse">!</span>' : ''}
-                <button class="complete-reminder-btn p-1 hover:bg-orange-200 dark:hover:bg-orange-800 rounded transition text-sm" data-id="${reminder.id}" title="Complete">✓</button>
-                <button class="delete-reminder-btn p-1 hover:bg-red-200 dark:hover:bg-red-800 rounded transition text-sm" data-id="${reminder.id}" title="Delete">✕</button>
-              </div>
-            </div>
-          </div>
-        `
-      }).join('')
-    }
-
-    this.attachReminderListeners()
-  }
-
-  attachReminderListeners() {
-    document.querySelectorAll('.complete-reminder-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        this.completeReminder(parseInt(e.currentTarget.dataset.id))
-        this.renderReminders()
-      })
-    })
-
-    document.querySelectorAll('.delete-reminder-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        this.deleteReminder(parseInt(e.currentTarget.dataset.id))
-        this.renderReminders()
-      })
-    })
-  }
-
-  // Close AI panel when clicking outside on main content
-  setupOutsideClickHandler() {
-    const app = document.getElementById('app')
-    const aiPanel = document.getElementById('aiPanel')
-    const aiOverlay = document.getElementById('aiOverlay')
-    const remindersPanel = document.getElementById('remindersPanel')
-
-    if (app) {
-      app.addEventListener('click', (e) => {
-        // Check if AI panel is open and click is outside the panel
-        if (!aiPanel.classList.contains('hidden')) {
-          const isClickInsidePanel = aiPanel.contains(e.target)
-          const isClickOnOpenBtn = e.target.closest('#openAIBtn')
-          const isClickOnFloatingBtn = e.target.closest('#floatingAddBtn')
-          const isClickOnTaskModal = e.target.closest('#taskModal')
-          const isClickOnDeleteModal = e.target.closest('#deleteModal')
-          const isClickOnRemindersPanel = e.target.closest('#remindersPanel')
-
-          // Close panel if click is outside and not on buttons that open other UI
-          if (!isClickInsidePanel && !isClickOnOpenBtn && !isClickOnFloatingBtn && !isClickOnTaskModal && !isClickOnDeleteModal && !isClickOnRemindersPanel) {
-            aiPanel.classList.add('hidden')
-            aiPanel.style.display = 'none'
-            aiOverlay.classList.add('hidden')
-            document.getElementById('floatingAddBtn').classList.remove('ai-panel-open')
-          }
-        }
-
-        // Check if reminders panel is open and click is outside the panel
-        if (!remindersPanel.classList.contains('hidden')) {
-          const isClickInsideReminders = remindersPanel.contains(e.target)
-          const isClickOnRemindersBtn = e.target.closest('#openRemindersBtn')
-          const isClickOnReminderModal = e.target.closest('#reminderModal')
-
-          // Close panel if click is outside and not on buttons that open other UI
-          if (!isClickInsideReminders && !isClickOnRemindersBtn && !isClickOnReminderModal) {
-            remindersPanel.classList.add('hidden')
-            remindersPanel.style.display = 'none'
-          }
-        }
-      })
-    }
-  }
-
-  checkApiKey() {
-    if (!this.aiApiKey) {
-      this.addAIMessage('🔑 No API key found. Please add VITE_CEREBRAS_API_KEY to your .env file and restart the dev server.', 'assistant')
-      this.addAIMessage('Get your key from: https://console.cerebras.ai', 'assistant')
-      this.addAIMessage('Or type your API key here to use it temporarily:', 'assistant')
-      return
-    }
-  }
-
-  async testApiKey() {
-    if (this.aiApiKey === 'demo') return
-
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.aiApiKey}`,
-          'HTTP-Referer': window.location.href,
-          'X-Title': 'TaskFlow'
-        },
-        body: JSON.stringify({
-          model: 'cerebras/llama3.1-8b',
-          messages: [
-            {
-              role: 'user',
-              content: 'Say "Hello" in one word.'
-            }
-          ],
-          max_tokens: 50
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.error('API Test Failed:', data)
-        this.aiApiKey = ''
-        this.addAIMessage(`❌ Connection failed: ${data.error?.message || 'Invalid API key'}`, 'assistant')
-        return false
-      }
-
-      this.addAIMessage('✅ Connected! I\'m ready to help you stay productive.', 'assistant')
-      return true
-    } catch (error) {
-      console.error('API Test Error:', error)
-      this.addAIMessage(`❌ Error testing connection: ${error.message}`, 'assistant')
-      return false
-    }
-  }
-
-  generateAIGreeting() {
-    const hour = new Date().getHours()
-    let greeting = '👋 Good morning!'
-    if (hour >= 12 && hour < 18) greeting = '👋 Good afternoon!'
-    if (hour >= 18) greeting = '👋 Good evening!'
-
-    if (!this.currentUser) {
-      this.addAIMessage(`${greeting} Welcome to TaskFlow! You're viewing in demo mode. Log in to save your tasks and get personalized AI assistance. 🚀`, 'assistant')
-      return
-    }
-
-    const activeTasks = this.tasks.filter(t => !t.completed).length
-    const completedToday = this.tasks.filter(t => t.completed && this.isToday(t.completedDate)).length
-
-    let message = `${greeting} You have ${activeTasks} active tasks. `
-    if (completedToday > 0) {
-      message += `Great job completing ${completedToday} tasks today! Keep it up! 🚀`
-    } else {
-      message += `Let's make today productive! 💪`
-    }
-
-    this.addAIMessage(message, 'assistant')
-  }
-
-  async sendAIMessage() {
-    const input = document.getElementById('aiInput')
-    const message = input.value.trim()
-
-    if (!message) return
-
-    // Require authentication for AI usage
-    if (!this.currentUser) {
-      this.addAIMessage('Please log in to use the AI assistant', 'assistant')
-      setTimeout(() => {
-        this.showAuthModal()
-      }, 500)
-      input.value = ''
-      return
-    }
-
-    this.addAIMessage(message, 'user')
-    input.value = ''
-
-    console.log('🤖 Processing message:', message)
-
-    // Check if user is asking about current date/time
-    if (this.isDateTimeRequest(message)) {
-      console.log('✅ Detected: Date/Time request')
-      this.handleDateTimeRequest(message)
-      return
-    }
-
-    // Check if user is asking to create/add a task
-    if (this.isTaskCreationRequest(message)) {
-      console.log('✅ Detected: Task creation request')
-      await this.handleAITaskCreation(message)
-      return
-    }
-
-    // Check if user is asking to create a reminder
-    if (this.isReminderCreationRequest(message)) {
-      console.log('✅ Detected: Reminder creation request')
-      await this.handleAIReminderCreation(message)
-      return
-    }
-
-    console.log('ℹ️ No special request detected, calling AI API')
-
-    if (!this.aiApiKey) {
-      this.addAIMessage('❌ API key not configured. Please add VITE_CEREBRAS_API_KEY to your .env file and restart the dev server.', 'assistant')
-      return
-    }
-
-    const loadingMsg = document.createElement('div')
-    loadingMsg.className = 'ai-message assistant'
-    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
-    document.getElementById('aiMessages').appendChild(loadingMsg)
-    this.scrollAIToBottom()
-
-    try {
-      const response = await this.callOpenRouterAPI(message)
-      loadingMsg.remove()
-      this.addAIMessage(response, 'assistant')
-    } catch (error) {
-      loadingMsg.remove()
-      this.addAIMessage(`❌ Error: ${error.message}`, 'assistant')
-    }
-  }
-
-  isDateTimeRequest(message) {
-    const keywords = [
-      'what date', 'what\'s the date', 'whats the date', 'current date', 'today\'s date', 'todays date',
-      'what time', 'what\'s the time', 'whats the time', 'current time',
-      'what day', 'what\'s the day', 'whats the day', 'day is it', 'day today',
-      'what year', 'what\'s the year', 'whats the year', 'current year',
-      'date today', 'time now', 'today date', 'date and time'
-    ]
-    const lowerMessage = message.toLowerCase()
-    return keywords.some(keyword => lowerMessage.includes(keyword))
-  }
-
-  handleDateTimeRequest(message) {
-    const now = new Date()
-    const lowerMessage = message.toLowerCase()
-    
-    // Format options
-    const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }
-    const timeOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }
-    
-    const fullDate = now.toLocaleDateString('en-US', dateOptions)
-    const time = now.toLocaleTimeString('en-US', timeOptions)
-    const shortDate = now.toLocaleDateString('en-US')
-    const year = now.getFullYear()
-    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' })
-    
-    let response = ''
-    
-    // Determine what user is asking for
-    if (lowerMessage.includes('time') && lowerMessage.includes('date')) {
-      response = `📅 Today is ${fullDate}\n⏰ Current time is ${time}`
-    } else if (lowerMessage.includes('time')) {
-      response = `⏰ The current time is ${time}`
-    } else if (lowerMessage.includes('year')) {
-      response = `📅 The current year is ${year}`
-    } else if (lowerMessage.includes('day') && !lowerMessage.includes('date')) {
-      response = `📅 Today is ${dayName}`
-    } else {
-      // Default to full date
-      response = `📅 Today is ${fullDate}`
-    }
-    
-    this.addAIMessage(response, 'assistant')
-  }
-
-  isTaskCreationRequest(message) {
-    const keywords = ['add task', 'create task', 'new task', 'add a task', 'create a task', 'add to my tasks', 'remind me to', 'i need to', 'i should', 'todo:', 'task:']
-    const lowerMessage = message.toLowerCase()
-    return keywords.some(keyword => lowerMessage.includes(keyword))
-  }
-
-  isReminderCreationRequest(message) {
-    const keywords = [
-      'set reminder', 'create reminder', 'remind me', 'add reminder', 'new reminder', 'schedule reminder',
-      'set a reminder', 'create a reminder', 'add a reminder', 'make a reminder', 'make reminder',
-      'reminder for', 'reminder at', 'reminder on', 'reminder about',
-      'can you remind', 'could you remind', 'please remind', 'i need a reminder'
-    ]
-    const lowerMessage = message.toLowerCase()
-    return keywords.some(keyword => lowerMessage.includes(keyword))
-  }
-
-  async handleAIReminderCreation(message) {
-    console.log('🔔 AI Reminder Creation Request:', message)
-    
-    const loadingMsg = document.createElement('div')
-    loadingMsg.className = 'ai-message assistant'
-    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
-    document.getElementById('aiMessages').appendChild(loadingMsg)
-    this.scrollAIToBottom()
-
-    try {
-      const reminderData = await this.parseReminderFromMessage(message)
-      console.log('📝 Parsed reminder data:', reminderData)
-      
-      if (!reminderData.title || !reminderData.reminderDateTime) {
-        loadingMsg.remove()
-        this.addAIMessage('❌ I couldn\'t understand when to remind you. Please specify a date and time!', 'assistant')
         return
       }
 
-      // Validate that reminder date is in the future
-      const reminderDate = new Date(reminderData.reminderDateTime)
-      const now = new Date()
-      
-      if (reminderDate <= now) {
-        loadingMsg.remove()
-        console.warn('⚠️ Reminder date is in the past:', reminderDate)
-        this.addAIMessage('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', 'assistant')
-        this.showNotification('Reminder must be in the future', '⚠️', 3000)
-        return
-      }
-
-      // Create the reminder
-      const reminder = {
-        id: Date.now(),
-        title: reminderData.title,
-        reminderDateTime: reminderData.reminderDateTime,
-        taskId: null,
-        completed: false,
-        createdDate: new Date().toISOString()
-      }
-
-      console.log('➕ Adding reminder to memory:', reminder)
-      this.reminders.unshift(reminder)
-      
-      console.log('💾 Saving reminder to database...')
-      await this.saveReminders()
-      
-      console.log('🎨 Rendering reminders...')
-      this.renderReminders()
-      
-      console.log('✅ Reminder created successfully!')
-      console.log('📊 Total reminders:', this.reminders.length)
-
-      loadingMsg.remove()
-      this.addAIMessage(`✅ Reminder set: "${reminder.title}" for ${new Date(reminderData.reminderDateTime).toLocaleString()}`, 'assistant')
-      this.showNotification(`Reminder set for ${new Date(reminderData.reminderDateTime).toLocaleString()}`, '⏰', 3000)
-    } catch (error) {
-      console.error('❌ Error creating reminder:', error)
-      loadingMsg.remove()
-      this.addAIMessage(`❌ Error creating reminder: ${error.message}`, 'assistant')
-    }
-  }
-
-  async parseReminderFromMessage(message) {
-    if (!this.aiApiKey) {
-      return this.parseReminderLocally(message)
-    }
-
-    // Rate limiting check
-    const now = Date.now()
-    const timeSinceLastCall = now - this.lastApiCall
-    
-    if (timeSinceLastCall < this.apiCallDelay) {
-      const waitTime = this.apiCallDelay - timeSinceLastCall
-      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
-      await new Promise(resolve => setTimeout(resolve, waitTime))
-    }
-
-    this.lastApiCall = Date.now()
-
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.aiApiKey}`,
-          'HTTP-Referer': window.location.href,
-          'X-Title': 'TaskFlow'
-        },
-        body: JSON.stringify({
-          model: 'cerebras/llama3.1-8b',
-          messages: [
-            {
-              role: 'system',
-              content: `Extract reminder details from the user message. Return a JSON object with:
-- title (string, required): The reminder title
-- reminderDateTime (string, required): ISO 8601 format (YYYY-MM-DDTHH:mm:ss)
-
-Today's date is ${new Date().toISOString().split('T')[0]}. If the user says "tomorrow", add 1 day. If they say "in 2 hours", add 2 hours to current time.
-
-Only return valid JSON, no other text.`
-            },
-            {
-              role: 'user',
-              content: message
-            }
-          ],
-          max_tokens: 200,
-          temperature: 0.3
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.warn('API error, falling back to local parsing:', data)
-        return this.parseReminderLocally(message)
-      }
-
-      const content = data.choices?.[0]?.message?.content
-      if (!content) {
-        console.warn('No content in API response, falling back to local parsing')
-        return this.parseReminderLocally(message)
-      }
-
-      const reminderData = JSON.parse(content)
-      return reminderData
-    } catch (error) {
-      console.error('Reminder parsing error, falling back to local parsing:', error)
-      return this.parseReminderLocally(message)
-    }
-  }
-
-  parseReminderLocally(message) {
-    const lowerMessage = message.toLowerCase()
-    
-    // Extract title by removing common keywords and time/day information
-    let title = message
-      // Remove command phrases at the start
-      .replace(/^(can you|could you|please|i need|i want|would you)\s+/i, '')
-      .replace(/^(set|create|add|make)\s+(a\s+)?(reminder|remind me)\s*/i, '')
-      .replace(/^(reminder)\s+(for|about|to|at|on)\s*/i, '')
-      .replace(/^(remind me)\s+(for|about|to|at|on)?\s*/i, '')
-      // Remove day references
-      .replace(/\s*(tomorrow|today|bukas|ngayon)\s*/gi, ' ')
-      // Remove time references (6pm, 6:30pm, at 6pm, ng 6pm, etc.)
-      .replace(/\s*(at|ng|on|by)\s*\d{1,2}(:\d{2})?\s*(am|pm)?\s*/gi, ' ')
-      .replace(/\s*\d{1,2}(:\d{2})?\s*(am|pm)\s*/gi, ' ')
-      // Remove common prepositions that might be left over
-      .replace(/^(for|about|to)\s+/i, '')
-      // Clean up extra spaces
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    // Try to extract time
-    let reminderDateTime = new Date()
-    let timeSet = false
-    
-    // Check for specific time (6pm, 6:00pm, 18:00, etc.)
-    const timePattern = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i
-    const timeMatch = message.match(timePattern)
-    
-    if (timeMatch) {
-      let hours = parseInt(timeMatch[1])
-      const minutes = timeMatch[2] ? parseInt(timeMatch[2]) : 0
-      const meridiem = timeMatch[3] ? timeMatch[3].toLowerCase() : null
-      
-      // Convert to 24-hour format
-      if (meridiem === 'pm' && hours < 12) {
-        hours += 12
-      } else if (meridiem === 'am' && hours === 12) {
-        hours = 0
-      } else if (!meridiem && hours < 12) {
-        // If no AM/PM specified and hour is less than 12, assume PM if it's a reasonable time
-        hours += 12
-      }
-      
-      reminderDateTime.setHours(hours, minutes, 0, 0)
-      timeSet = true
-    }
-    
-    // Check for day (tomorrow, today, bukas, etc.)
-    if (lowerMessage.includes('tomorrow') || lowerMessage.includes('bukas')) {
-      reminderDateTime.setDate(reminderDateTime.getDate() + 1)
-      if (!timeSet) {
-        reminderDateTime.setHours(9, 0, 0, 0)
-      }
-    } else if (lowerMessage.includes('today') || lowerMessage.includes('ngayon')) {
-      if (!timeSet) {
-        reminderDateTime.setHours(9, 0, 0, 0)
-      }
-    } else if (lowerMessage.includes('in 1 hour')) {
-      reminderDateTime.setHours(reminderDateTime.getHours() + 1)
-    } else if (lowerMessage.includes('in 2 hours')) {
-      reminderDateTime.setHours(reminderDateTime.getHours() + 2)
-    } else if (!timeSet) {
-      // Default to 1 hour from now if no time specified
-      reminderDateTime.setHours(reminderDateTime.getHours() + 1)
-    }
-
-    console.log('📝 Parsed locally:', { 
-      original: message,
-      title: title || 'Reminder', 
-      reminderDateTime: reminderDateTime.toISOString() 
-    })
-
-    return {
-      title: title || 'Reminder',
-      reminderDateTime: reminderDateTime.toISOString()
-    }
-  }
-
-  async handleAITaskCreation(message) {
-    const loadingMsg = document.createElement('div')
-    loadingMsg.className = 'ai-message assistant'
-    loadingMsg.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'
-    document.getElementById('aiMessages').appendChild(loadingMsg)
-    this.scrollAIToBottom()
-
-    try {
-      const taskData = await this.parseTaskFromMessage(message)
-      
-      if (!taskData.title) {
-        loadingMsg.remove()
-        this.addAIMessage('❌ I couldn\'t understand what task to create. Please be more specific!', 'assistant')
-        return
-      }
-
-      // Create the task
-      const task = {
-        id: Date.now(),
-        title: taskData.title,
-        notes: taskData.notes || '',
-        completed: false,
-        priority: taskData.priority || 'medium',
-        project: taskData.project || 'personal',
-        dueDate: taskData.dueDate || new Date().toISOString().split('T')[0],
-        createdDate: new Date().toISOString().split('T')[0],
-        completedDate: null,
-        labels: taskData.labels || []
-      }
-
-      this.tasks.unshift(task)
-      await this.saveTasks()
-      this.render()
-
-      loadingMsg.remove()
-      this.addAIMessage(`✅ Task created: "${task.title}" (${task.priority} priority, ${task.project} project)`, 'assistant')
-    } catch (error) {
-      loadingMsg.remove()
-      this.addAIMessage(`❌ Error creating task: ${error.message}`, 'assistant')
-    }
-  }
-
-  async parseTaskFromMessage(message) {
-    if (!this.aiApiKey) {
-      return this.parseTaskLocally(message)
-    }
-
-    // Rate limiting check
-    const now = Date.now()
-    const timeSinceLastCall = now - this.lastApiCall
-    
-    if (timeSinceLastCall < this.apiCallDelay) {
-      const waitTime = this.apiCallDelay - timeSinceLastCall
-      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
-      await new Promise(resolve => setTimeout(resolve, waitTime))
-    }
-
-    this.lastApiCall = Date.now()
-
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.aiApiKey}`,
-          'HTTP-Referer': window.location.href,
-          'X-Title': 'TaskFlow'
-        },
-        body: JSON.stringify({
-          model: 'cerebras/llama3.1-8b',
-          messages: [
-            {
-              role: 'system',
-              content: `Extract task details from the user message. Return a JSON object with:
-- title (string, required): The task title
-- notes (string, optional): Additional notes
-- priority (string): 'high', 'medium', or 'low' (default: 'medium')
-- project (string): 'work', 'personal', or 'learning' (default: 'personal')
-- dueDate (string, optional): YYYY-MM-DD format
-- labels (array, optional): Array of label strings
-
-Only return valid JSON, no other text.`
-            },
-            {
-              role: 'user',
-              content: message
-            }
-          ],
-          max_tokens: 200,
-          temperature: 0.3
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.warn('API error, falling back to local parsing:', data)
-        return this.parseTaskLocally(message)
-      }
-
-      const content = data.choices?.[0]?.message?.content
-      if (!content) {
-        console.warn('No content in API response, falling back to local parsing')
-        return this.parseTaskLocally(message)
-      }
-
-      const taskData = JSON.parse(content)
-      return taskData
-    } catch (error) {
-      console.error('Task parsing error, falling back to local parsing:', error)
-      return this.parseTaskLocally(message)
-    }
-  }
-
-  parseTaskLocally(message) {
-    // Simple local parsing as fallback
-    const lowerMessage = message.toLowerCase()
-    
-    // Extract title by removing common keywords and command phrases
-    let title = message
-      // Remove command phrases at the start
-      .replace(/^(can you|could you|please|i need|i want|would you)\s+/i, '')
-      .replace(/^(add|create|new|make)\s+(a\s+)?(task|todo)\s*/i, '')
-      .replace(/^(task|todo):\s*/i, '')
-      .replace(/^(remind me to|i need to|i should|i have to)\s*/i, '')
-      // Remove common prepositions that might be left over
-      .replace(/^(to|for)\s+/i, '')
-      // Clean up extra spaces
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    // Detect priority
-    let priority = 'medium'
-    if (lowerMessage.includes('urgent') || lowerMessage.includes('asap') || lowerMessage.includes('high priority')) {
-      priority = 'high'
-    } else if (lowerMessage.includes('low priority') || lowerMessage.includes('whenever')) {
-      priority = 'low'
-    }
-
-    // Detect project
-    let project = 'personal'
-    if (lowerMessage.includes('work') || lowerMessage.includes('project') || lowerMessage.includes('meeting')) {
-      project = 'work'
-    } else if (lowerMessage.includes('learn') || lowerMessage.includes('study') || lowerMessage.includes('course')) {
-      project = 'learning'
-    }
-
-    console.log('📝 Parsed task locally:', {
-      original: message,
-      title: title || 'New Task',
-      priority,
-      project
-    })
-
-    return {
-      title: title || 'New Task',
-      priority,
-      project,
-      notes: '',
-      labels: []
-    }
-  }
-
-  async callOpenRouterAPI(message) {
-    if (this.aiApiKey === 'demo') {
-      const responses = [
-        '💡 Great task! Keep up the momentum.',
-        '🎯 Focus on one task at a time for better results.',
-        '⚡ You\'re doing amazing! Keep going!',
-        '📊 Break big tasks into smaller steps.',
-        '🚀 Consistency is key to productivity!'
-      ]
-      return responses[Math.floor(Math.random() * responses.length)]
-    }
-
-    // Rate limiting check
-    const now = Date.now()
-    const timeSinceLastCall = now - this.lastApiCall
-    
-    if (timeSinceLastCall < this.apiCallDelay) {
-      const waitTime = this.apiCallDelay - timeSinceLastCall
-      console.log(`⏳ Rate limiting: waiting ${waitTime}ms before API call`)
-      await new Promise(resolve => setTimeout(resolve, waitTime))
-    }
-
-    this.lastApiCall = Date.now()
-
-    const activeTasks = this.tasks.filter(t => !t.completed).length
-    const completedTasks = this.tasks.filter(t => t.completed).length
-    
-    // Get current date and time for context
-    const now2 = new Date()
-    const currentDate = now2.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    const currentTime = now2.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
-    
-    const context = `User has ${activeTasks} active tasks and ${completedTasks} completed tasks. Current date and time: ${currentDate}, ${currentTime}.`
-
-    try {
-      const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.aiApiKey}`
-        },
-        body: JSON.stringify({
-          model: 'llama3.1-8b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a helpful productivity assistant for a todo app called TaskFlow. ${context} Be concise, encouraging, and helpful. Keep responses under 100 words. When users ask about the current date or time, use the date/time provided in the context above.`
-            },
-            {
-              role: 'user',
-              content: message
-            }
-          ],
-          max_tokens: 150,
-          temperature: 0.7
-        })
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        console.error('API Error:', data)
-        
-        // Handle rate limiting (429)
-        if (response.status === 429) {
-          this.apiRetryCount++
-          
-          if (this.apiRetryCount <= this.maxRetries) {
-            const retryDelay = this.apiCallDelay * this.apiRetryCount * 2 // Exponential backoff
-            console.log(`⏳ Rate limited. Retrying in ${retryDelay}ms (attempt ${this.apiRetryCount}/${this.maxRetries})`)
-            
-            await new Promise(resolve => setTimeout(resolve, retryDelay))
-            return await this.callOpenRouterAPI(message) // Retry
-          } else {
-            this.apiRetryCount = 0
-            throw new Error('Rate limit exceeded. Please wait a moment and try again.')
-          }
-        }
-        
-        // Handle other errors
-        if (response.status === 401) {
-          throw new Error('Invalid API key. Please check your configuration.')
-        }
-        
-        if (response.status === 402) {
-          throw new Error('Insufficient credits. Please add credits to your Cerebras account.')
-        }
-        
-        throw new Error(data.error?.message || 'API request failed')
-      }
-
-      // Reset retry count on success
-      this.apiRetryCount = 0
-
-      if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
-        return data.choices[0].message.content
-      }
-      
-      throw new Error('Invalid API response format')
-    } catch (error) {
-      console.error('API Error Details:', error)
-      
-      // If it's a network error, provide helpful message
-      if (error.message.includes('fetch')) {
-        throw new Error('Network error. Please check your internet connection.')
-      }
-      
-      throw error
-    }
-  }
-
-  addAIMessage(message, sender) {
-    const messagesContainer = document.getElementById('aiMessages')
-    const messageEl = document.createElement('div')
-    messageEl.className = `ai-message ${sender}`
-    messageEl.innerHTML = `<p class="text-xs sm:text-sm">${message}</p>`
-    messagesContainer.appendChild(messageEl)
-    this.scrollAIToBottom()
-  }
-
-  scrollAIToBottom() {
-    const aiPanel = document.getElementById('aiPanel')
-    const messagesContainer = aiPanel?.querySelector('.flex-1.overflow-y-auto')
-    if (messagesContainer) {
-      // Use requestAnimationFrame for smoother scrolling
-      requestAnimationFrame(() => {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight
-      })
-    }
-  }
-
-  clearAIChat() {
-    const messagesContainer = document.getElementById('aiMessages')
-    messagesContainer.innerHTML = `
-      <div class="ai-message">
-        <p class="text-xs sm:text-sm text-light-700 dark:text-dark-300">👋 Hi! I'm your AI assistant. I'll help you stay on track with smart reminders and productivity insights.</p>
-      </div>
-    `
-    this.aiMessages = []
-    this.showNotification('Chat cleared', '🗑️', 2000)
-  }
-
-  // Date Management
-  updateDate() {
-    const now = new Date()
-    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }
-    const dateStr = now.toLocaleDateString('en-US', options)
-
-    const headerDate = document.getElementById('headerDate')
-    if (headerDate) {
-      headerDate.textContent = dateStr
-    }
-  }
-
-  isToday(dateStr) {
-    if (!dateStr) return false
-    const today = new Date().toISOString().split('T')[0]
-    return dateStr === today
-  }
-
-  // Event Listeners
-  setupEventListeners() {
-    document.querySelectorAll('.nav-item').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault()
-        // Remove active class from all nav items
-        document.querySelectorAll('.nav-item').forEach(b => {
-          b.classList.remove('active')
-          b.classList.remove('bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-          b.classList.add('text-light-700', 'dark:text-dark-300')
-        })
-        // Add active class to clicked item
-        e.currentTarget.classList.add('active')
-        e.currentTarget.classList.add('bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-        e.currentTarget.classList.remove('text-light-700', 'dark:text-dark-300')
-        
-        this.currentFilter = e.currentTarget.dataset.filter || 'today'
-        this.render()
-      })
-    })
-
-    document.querySelectorAll('.project-item').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault()
-        // Remove active from nav items
-        document.querySelectorAll('.nav-item').forEach(b => {
-          b.classList.remove('active')
-          b.classList.remove('bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-          b.classList.add('text-light-700', 'dark:text-dark-300')
-        })
-        
-        const project = e.currentTarget.dataset.project
-        this.currentFilter = 'project:' + project
-        this.render()
-      })
-    })
-
-    const openRemindersBtn = document.getElementById('openRemindersBtn')
-    if (openRemindersBtn) {
-      openRemindersBtn.addEventListener('click', (e) => {
-        e.preventDefault()
-        // Remove active from nav items when opening reminders
-        document.querySelectorAll('.nav-item').forEach(b => {
-          b.classList.remove('active')
-          b.classList.remove('bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-          b.classList.add('text-light-700', 'dark:text-dark-300')
-        })
-        this.openRemindersPanel()
-      })
-    }
-  }
-
-  // Task Management
-  async deleteTask(id) {
-    // Delete from Supabase first if user is logged in
-    if (this.currentUser) {
-      await this.deleteTaskFromSupabase(id)
-    }
-    
-    this.tasks = this.tasks.filter(t => t.id !== id)
-    this.saveTasks()
-    this.render()
-  }
-
-  toggleTask(id) {
-    if (!this.currentUser) {
-      this.showAuthModal()
-      this.showNotification('Please log in to modify tasks', '🔐', 3000)
-      return
-    }
-    const task = this.tasks.find(t => t.id === id)
-    if (task) {
-      task.completed = !task.completed
-      if (task.completed) {
-        task.completedDate = new Date().toISOString().split('T')[0]
-      } else {
-        task.completedDate = null
-      }
-      this.saveTasks()
-      this.render()
-    }
-  }
-
-  // Filtering
-  getFilteredTasks() {
-    let filtered = this.tasks
-    const today = new Date().toISOString().split('T')[0]
-
-    if (this.currentFilter === 'today') {
-      filtered = filtered.filter(t => !t.completed && (t.dueDate === today || !t.dueDate))
-    } else if (this.currentFilter === 'inbox') {
-      filtered = filtered.filter(t => !t.completed)
-    } else if (this.currentFilter === 'next7') {
-      const nextWeek = new Date()
-      nextWeek.setDate(nextWeek.getDate() + 7)
-      filtered = filtered.filter(t => {
-        if (t.completed) return false
-        const taskDate = new Date(t.dueDate)
-        return taskDate <= nextWeek && taskDate >= new Date()
-      })
-    } else if (this.currentFilter === 'completed') {
-      filtered = filtered.filter(t => t.completed)
-    } else if (this.currentFilter.startsWith('project:')) {
-      const projectValue = this.currentFilter.replace('project:', '').trim()
-      filtered = filtered.filter(t => t.project === projectValue && !t.completed)
-    }
-
-    return filtered.sort((a, b) => {
-      const priorityOrder = { high: 0, medium: 1, low: 2 }
-      return priorityOrder[a.priority] - priorityOrder[b.priority]
-    })
-  }
-
-  // Rendering
-  render() {
-    const tasksList = document.getElementById('tasksList')
-    if (!tasksList) {
-      console.warn('⚠️ tasksList element not found')
-      return
-    }
-
-    const tasks = this.getFilteredTasks()
-    console.log('🎨 Rendering', tasks.length, 'tasks for filter:', this.currentFilter)
-
-    if (tasks.length === 0) {
-      tasksList.innerHTML = `
-        <div class="text-center py-12">
-          <p class="text-4xl mb-3">🎉</p>
-          <p class="text-lg font-semibold text-light-700 dark:text-dark-300">No tasks here yet</p>
-          <p class="text-sm text-light-600 dark:text-dark-400 mt-2">Add a new task to get started!</p>
-        </div>
-      `
-    } else {
-      tasksList.innerHTML = tasks.map(task => this.renderTask(task)).join('')
-    }
-
-    this.attachTaskListeners()
-    this.updateStats()
-    this.updateNavigation()
-  }
-
-  renderTask(task) {
-    const priorityColors = {
-      high: 'badge-high',
-      medium: 'badge-medium',
-      low: 'badge-low'
-    }
-
-    const projectEmojis = {
-      'work': '💼',
-      'personal': '🎯',
-      'learning': '📚'
-    }
-
-    const dueDate = new Date(task.dueDate)
-    const today = new Date()
-    const isOverdue = dueDate < today && !task.completed
-    const isToday = dueDate.toDateString() === today.toDateString()
-
-    let dueDateDisplay = ''
-    if (task.dueDate) {
-      if (isToday) {
-        dueDateDisplay = '<span class="text-xs px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg font-medium">Today</span>'
-      } else if (isOverdue) {
-        dueDateDisplay = `<span class="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg font-medium">Overdue</span>`
-      } else {
-        dueDateDisplay = `<span class="text-xs text-light-600 dark:text-dark-400">${dueDate.toLocaleDateString()}</span>`
+      const existingTasks = JSON.parse(localStorage.getItem('tasks') || '[]')
+      if (!existingTasks.some((t) => t.id === task.id)) {
+        existingTasks.unshift(task)
+        localStorage.setItem('tasks', JSON.stringify(existingTasks))
       }
     }
 
-    const notesPreview = task.notes ? `<p class="text-xs text-light-600 dark:text-dark-400 mt-1 line-clamp-2">${task.notes}</p>` : ''
+    const onAIReminderCreated = (event) => {
+      const reminder = event?.detail
+      if (!reminder || !reminder.id) return
 
-    return `
-      <div class="task-item ${task.completed ? 'completed' : ''}" data-task-id="${task.id}">
-        <input
-          type="checkbox"
-          class="task-checkbox"
-          data-id="${task.id}"
-          ${task.completed ? 'checked' : ''}
-        >
-        <div class="flex-1 min-w-0">
-          <p class="font-medium ${task.completed ? 'line-through text-light-500 dark:text-dark-500' : 'text-light-900 dark:text-white'}">${task.title}</p>
-          ${notesPreview}
-          ${task.labels.length > 0 ? `<div class="flex gap-1 mt-2 flex-wrap">${task.labels.map(label => `<span class="text-xs px-2 py-0.5 bg-light-200 dark:bg-dark-700 text-light-700 dark:text-dark-200 rounded">${label}</span>`).join('')}</div>` : ''}
-        </div>
-        <div class="flex items-center gap-2 ml-2 flex-shrink-0 flex-wrap justify-end">
-          <span class="badge ${priorityColors[task.priority]}">
-            ${task.priority.charAt(0).toUpperCase() + task.priority.slice(1)}
-          </span>
-          ${dueDateDisplay}
-          <span class="text-lg" title="${task.project}">${projectEmojis[task.project] || '📋'}</span>
-          <button
-            class="edit-btn text-light-500 dark:text-dark-500 hover:text-blue-600 dark:hover:text-blue-400 transition p-1 hover:bg-light-200 dark:hover:bg-dark-700 rounded-lg"
-            data-id="${task.id}"
-            title="Edit task"
-          >
-            ✏️
-          </button>
-          <button
-            class="delete-btn text-light-500 dark:text-dark-500 hover:text-red-600 dark:hover:text-red-400 transition p-1 hover:bg-light-200 dark:hover:bg-dark-700 rounded-lg"
-            data-id="${task.id}"
-            title="Delete task"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-    `
-  }
-
-  attachTaskListeners() {
-    document.querySelectorAll('.task-checkbox').forEach(checkbox => {
-      checkbox.addEventListener('change', (e) => {
-        this.toggleTask(parseInt(e.currentTarget.dataset.id))
-      })
-    })
-
-    document.querySelectorAll('.delete-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        this.showDeleteConfirm(parseInt(e.currentTarget.dataset.id))
-      })
-    })
-
-    document.querySelectorAll('.edit-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault()
-        this.editTask(parseInt(e.currentTarget.dataset.id))
-      })
-    })
-  }
-
-  updateStats() {
-    const activeTasks = this.tasks.filter(t => !t.completed).length
-    const completedTasks = this.tasks.filter(t => t.completed).length
-    const total = this.tasks.length
-    const productivity = total > 0 ? Math.round((completedTasks / total) * 100) : 0
-
-    const activeEl = document.getElementById('activeTasks')
-    const completedEl = document.getElementById('completedTasks')
-    const streakEl = document.getElementById('streak')
-    const productivityEl = document.getElementById('productivity')
-    const todayCountEl = document.getElementById('todayCount')
-
-    if (activeEl) activeEl.textContent = activeTasks
-    if (completedEl) completedEl.textContent = completedTasks
-    if (streakEl) streakEl.textContent = Math.max(0, completedTasks)
-    if (productivityEl) productivityEl.textContent = productivity + '%'
-    if (todayCountEl) todayCountEl.textContent = activeTasks
-  }
-
-  updateNavigation() {
-    document.querySelectorAll('.nav-item').forEach(b => {
-      const filterValue = b.dataset.filter || 'today'
-      const isActive = (this.currentFilter === filterValue)
-      
-      if (isActive) {
-        b.classList.add('active', 'bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-        b.classList.remove('text-light-700', 'dark:text-dark-300')
-      } else {
-        b.classList.remove('active', 'bg-gradient-to-r', 'from-blue-600', 'to-blue-500', 'text-white', 'shadow-lg')
-        b.classList.add('text-light-700', 'dark:text-dark-300')
-      }
-    })
-
-    document.querySelectorAll('.project-item').forEach(b => {
-      const isActive = (this.currentFilter === ('project:' + (b.dataset.project || '')))
-      b.classList.toggle('active', isActive)
-    })
-  }
-
-  // Storage
-  saveTasks() {
-    if (this.currentUser) {
-      this.saveTasksToSupabase().catch(error => {
-        console.error('Error saving tasks to Supabase:', error)
-        this.showNotification('Failed to sync tasks to cloud', '⚠️', 3000)
-      })
-    } else {
-      localStorage.setItem('todoTasks', JSON.stringify(this.tasks))
-    }
-  }
-
-  loadTasks() {
-    if (this.currentUser) {
-      return [] // Will be loaded from Supabase in init()
-    }
-    const stored = localStorage.getItem('todoTasks')
-    return stored ? JSON.parse(stored) : this.getDefaultTasks()
-  }
-
-  async saveTasksToSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('Cannot save to Supabase: missing credentials or user')
-      return
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('Cannot save to Supabase: no auth token')
-      return
-    }
-    
-    for (const task of this.tasks) {
-      try {
-        const existingTask = await this.getTaskFromSupabase(task.id)
-        
-        const taskData = {
-          title: task.title,
-          notes: task.notes || '',
-          completed: task.completed,
-          priority: task.priority,
-          project: task.project,
-          due_date: task.dueDate,
-          completed_date: task.completedDate,
-          labels: task.labels && task.labels.length > 0 ? `{${task.labels.join(',')}}` : null
-        }
-        
-        if (existingTask) {
-          // Update existing task - use DELETE + INSERT instead of PATCH
-          console.log('Updating task in Supabase:', task.id)
-          
-          // Delete old record
-          await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${task.id}&user_id=eq.${this.currentUser.id}`, {
-            method: 'DELETE',
-            headers: {
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`
-            }
-          })
-          
-          // Insert new record
-          const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`,
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({
-              id: task.id,
-              user_id: this.currentUser.id,
-              created_date: task.createdDate,
-              ...taskData
-            })
-          })
-          
-          if (!response.ok) {
-            const error = await response.json()
-            console.error('Error updating task:', error)
-          } else {
-            console.log('✅ Task updated in Supabase:', task.title)
-          }
-        } else {
-          // Create new task
-          console.log('Creating new task in Supabase:', task.id)
-          const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`,
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({
-              id: task.id,
-              user_id: this.currentUser.id,
-              created_date: task.createdDate,
-              ...taskData
-            })
-          })
-          
-          if (!response.ok) {
-            const error = await response.json()
-            console.error('Error creating task:', error)
-            console.error('Task data:', { id: task.id, user_id: this.currentUser.id, ...taskData })
-          } else {
-            console.log('✅ Task saved to Supabase:', task.title)
-          }
-        }
-      } catch (error) {
-        console.error('Error saving task to Supabase:', error)
-      }
-    }
-  }
-
-  async getTaskFromSupabase(taskId) {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) return null
-
-    try {
-      const token = localStorage.getItem('authToken')
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${taskId}&user_id=eq.${this.currentUser.id}`, {
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        console.error('Error fetching task:', await response.json())
-        return null
-      }
-
-      const data = await response.json()
-      return data[0] || null
-    } catch (error) {
-      console.error('Error in getTaskFromSupabase:', error)
-      return null
-    }
-  }
-
-  async deleteTaskFromSupabase(taskId) {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('Cannot delete from Supabase: missing credentials or user')
-      return
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('Cannot delete from Supabase: no auth token')
-      return
-    }
-
-    try {
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${taskId}&user_id=eq.${this.currentUser.id}`, {
-        method: 'DELETE',
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        console.error('Error deleting task from Supabase:', error)
-        throw new Error('Failed to delete task from database')
-      } else {
-        console.log('Task deleted from Supabase:', taskId)
-      }
-    } catch (error) {
-      console.error('Error in deleteTaskFromSupabase:', error)
-      throw error
-    }
-  }
-
-  async updateTaskInSupabase(task) {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('Cannot update in Supabase: missing credentials or user')
-      return
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('Cannot update in Supabase: no auth token')
-      return
-    }
-
-    try {
-      const taskData = {
-        title: task.title,
-        notes: task.notes || '',
-        completed: task.completed,
-        priority: task.priority,
-        project: task.project,
-        due_date: task.dueDate,
-        completed_date: task.completedDate,
-        labels: task.labels && task.labels.length > 0 ? `{${task.labels.join(',')}}` : null
-      }
-
-      console.log('Updating task in Supabase:', task.id, taskData)
-      
-      // First check if task exists
-      const existingTask = await this.getTaskFromSupabase(task.id)
-      
-      if (!existingTask) {
-        // Task doesn't exist, create it instead
-        console.log('Task not found in DB, creating instead:', task.id)
-        const createResponse = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_KEY,
-            'Authorization': `Bearer ${token}`,
-            'Prefer': 'return=minimal'
-          },
-          body: JSON.stringify({
-            id: task.id,
-            user_id: this.currentUser.id,
-            created_date: task.createdDate,
-            ...taskData
-          })
-        })
-        
-        if (!createResponse.ok) {
-          const error = await createResponse.json()
-          console.error('Error creating task in Supabase:', error)
-          throw new Error('Failed to create task in database')
-        } else {
-          console.log('✅ Task created in Supabase:', task.title)
+      if (this.reminderSystem) {
+        const exists = this.reminderSystem.reminders.some((r) => r.id === reminder.id)
+        if (!exists) {
+          this.reminderSystem.reminders.unshift(reminder)
+          this.reminderSystem.saveReminders()
+          this.reminderSystem.renderReminders()
         }
         return
       }
+
+      const existingReminders = JSON.parse(localStorage.getItem('reminders') || '[]')
+      if (!existingReminders.some((r) => r.id === reminder.id)) {
+        existingReminders.unshift(reminder)
+        localStorage.setItem('reminders', JSON.stringify(existingReminders))
+      }
+    }
+
+    window.addEventListener('ai-task-created', onAITaskCreated)
+    this.memoryManager.registerListener(window, 'ai-task-created', onAITaskCreated, 'ai-bridge')
+    window.addEventListener('ai-reminder-created', onAIReminderCreated)
+    this.memoryManager.registerListener(window, 'ai-reminder-created', onAIReminderCreated, 'ai-bridge')
+  }
+
+  showProfileModal() {
+    const modal = this.domManager.get('profileModal')
+    if (modal) {
+      modal.classList.remove('hidden')
+      modal.style.display = 'flex'
       
-      // Task exists, update it
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${task.id}&user_id=eq.${this.currentUser.id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`,
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(taskData)
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        console.error('Error updating task in Supabase:', error)
-        console.error('Task ID:', task.id, 'User ID:', this.currentUser.id)
-        console.error('Task data:', taskData)
-        throw new Error('Failed to update task in database')
-      } else {
-        console.log('✅ Task updated in Supabase:', task.title)
-      }
-    } catch (error) {
-      console.error('Error in updateTaskInSupabase:', error)
-      throw error
-    }
-  }
-
-  async loadTasksFromSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('Cannot load tasks: missing Supabase config or user')
-      return []
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('Cannot load tasks: no auth token found')
-      // Try to refresh the session
-      await this.refreshSession()
-      return []
-    }
-
-    try {
-      console.log('🔄 Loading tasks for user:', this.currentUser.id)
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/tasks?user_id=eq.${this.currentUser.id}&select=*`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        console.error(`❌ Failed to load tasks: ${response.status}`, errorData)
-        
-        // If 401, try to refresh session
-        if (response.status === 401) {
-          console.log('🔄 Auth token expired, attempting to refresh session...')
-          const refreshed = await this.refreshSession()
-          if (refreshed) {
-            // Retry loading tasks with new token
-            return await this.loadTasksFromSupabase()
-          } else {
-            console.error('❌ Session refresh failed, logging out...')
-            this.logout()
-            this.showNotification('Session expired. Please log in again.', '🔐', 3000)
-          }
-        }
-        return []
-      }
-
-      const data = await response.json()
-      console.log('✅ Loaded tasks from Supabase:', data.length, 'tasks')
+      // Populate profile data
+      const profileName = this.domManager.get('profileName')
+      const profileEmail = this.domManager.get('profileEmail')
       
-      if (!Array.isArray(data)) {
-        console.error('Invalid response format for tasks:', data)
-        return []
+      if (profileName && this.currentUser) {
+        profileName.value = this.currentUser.name || ''
       }
-
-      const tasks = data.map(t => ({
-        id: t.id,
-        title: t.title || 'Untitled',
-        notes: t.notes || '',
-        completed: t.completed || false,
-        priority: t.priority || 'medium',
-        project: t.project || 'personal',
-        dueDate: t.due_date || '',
-        createdDate: t.created_date || new Date().toISOString().split('T')[0],
-        completedDate: t.completed_date || null,
-        labels: Array.isArray(t.labels) ? t.labels : []
-      }))
-      
-      console.log('📋 Parsed tasks:', tasks)
-      return tasks
-    } catch (error) {
-      console.error('❌ Error loading tasks from Supabase:', error)
-      return []
-    }
-  }
-
-  saveReminders() {
-    if (this.currentUser) {
-      this.saveRemindersToSupabase()
-    } else {
-      localStorage.setItem('todoReminders', JSON.stringify(this.reminders))
-    }
-  }
-
-  loadReminders() {
-    if (this.currentUser) {
-      return [] // Will be loaded from Supabase in init()
-    }
-    const stored = localStorage.getItem('todoReminders')
-    return stored ? JSON.parse(stored) : []
-  }
-
-  async saveRemindersToSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('⚠️ Cannot save reminders: missing config or user')
-      return
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('⚠️ Cannot save reminders: no auth token')
-      return
-    }
-    
-    console.log('💾 Saving', this.reminders.length, 'reminders to Supabase...')
-    
-    for (const reminder of this.reminders) {
-      try {
-        const existingReminder = await this.getReminderFromSupabase(reminder.id)
-        
-        const reminderData = {
-          title: reminder.title,
-          reminder_date_time: reminder.reminderDateTime,
-          completed: reminder.completed
-        }
-        
-        if (existingReminder) {
-          // Update existing reminder - use DELETE + INSERT instead of PATCH to avoid trigger issues
-          console.log('🔄 Updating reminder:', reminder.id)
-          
-          // Delete old record
-          await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminder.id}&user_id=eq.${this.currentUser.id}`, {
-            method: 'DELETE',
-            headers: {
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`
-            }
-          })
-          
-          // Insert new record
-          const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`,
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({
-              id: reminder.id,
-              user_id: this.currentUser.id,
-              created_date: reminder.createdDate,
-              ...reminderData
-            })
-          })
-          
-          if (!response.ok) {
-            const error = await response.json()
-            console.error('❌ Error updating reminder:', error)
-          } else {
-            console.log('✅ Reminder updated:', reminder.title)
-          }
-        } else {
-          // Create new reminder
-          console.log('➕ Creating new reminder:', reminder.id)
-          const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': SUPABASE_KEY,
-              'Authorization': `Bearer ${token}`,
-              'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify({
-              id: reminder.id,
-              user_id: this.currentUser.id,
-              title: reminder.title,
-              reminder_date_time: reminder.reminderDateTime,
-              completed: reminder.completed,
-              created_date: reminder.createdDate
-            })
-          })
-          
-          if (!response.ok) {
-            const error = await response.json()
-            console.error('❌ Error creating reminder:', error)
-            console.error('Reminder data:', { id: reminder.id, user_id: this.currentUser.id, ...reminderData })
-          } else {
-            console.log('✅ Reminder saved to Supabase:', reminder.title)
-          }
-        }
-      } catch (error) {
-        console.error('❌ Error saving reminder to Supabase:', error)
+      if (profileEmail && this.currentUser) {
+        profileEmail.textContent = this.currentUser.email || '-'
       }
     }
-    
-    console.log('✅ All reminders saved to Supabase')
-  }
 
-  async getReminderFromSupabase(reminderId) {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) return null
+    const closeBtn = this.domManager.get('closeProfileModal')
+    const saveBtn = this.domManager.get('saveProfileBtn')
 
-    const token = localStorage.getItem('authToken')
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminderId}&user_id=eq.${this.currentUser.id}`, {
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${token}`
-      }
-    })
-
-    const data = await response.json()
-    return data[0] || null
-  }
-
-  async deleteReminderFromSupabase(reminderId) {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('Cannot delete reminder from Supabase: missing credentials or user')
-      return
+    if (closeBtn) {
+      closeBtn.onclick = null
+      closeBtn.onclick = () => this.closeProfileModal()
     }
+    if (saveBtn) {
+      saveBtn.onclick = null
+      saveBtn.onclick = () => this.saveProfile()
+    }
+  }
 
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('Cannot delete reminder from Supabase: no auth token')
+  closeProfileModal() {
+    const modal = this.domManager.get('profileModal')
+    if (modal) {
+      modal.classList.add('hidden')
+      modal.style.display = 'none'
+    }
+  }
+
+  async saveProfile() {
+    const profileName = this.domManager.get('profileName')
+    if (!profileName || !this.currentUser) return
+
+    const newName = profileName.value.trim()
+    if (!newName) {
+      this.showNotification('Name cannot be empty', '⚠️', 3000)
       return
     }
 
     try {
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?id=eq.${reminderId}&user_id=eq.${this.currentUser.id}`, {
-        method: 'DELETE',
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        console.error('Error deleting reminder from Supabase:', error)
-      } else {
-        console.log('Reminder deleted from Supabase:', reminderId)
+      // Update in database if authModule is available
+      if (this.authModule) {
+        await this.authModule.updateUserProfile(this.currentUser.id, { name: newName })
       }
-    } catch (error) {
-      console.error('Error in deleteReminderFromSupabase:', error)
-    }
-  }
-
-  async loadRemindersFromSupabase() {
-    if (!SUPABASE_URL || !SUPABASE_KEY || !this.currentUser) {
-      console.warn('⚠️ Cannot load reminders: missing Supabase config or user')
-      return []
-    }
-
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      console.warn('⚠️ Cannot load reminders: no auth token found')
-      return []
-    }
-
-    try {
-      console.log('🔄 Loading reminders for user:', this.currentUser.id)
-      const response = await fetch(`${SUPABASE_URL}/rest/v1/reminders?user_id=eq.${this.currentUser.id}&select=*`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${token}`
-        }
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        console.error(`❌ Failed to load reminders: ${response.status}`, errorData)
-        return []
-      }
-
-      const data = await response.json()
-      console.log('✅ Loaded reminders from Supabase:', data.length, 'reminders')
       
-      if (!Array.isArray(data)) {
-        console.error('Invalid response format for reminders:', data)
-        return []
-      }
-
-      const reminders = data.map(r => ({
-        id: r.id,
-        title: r.title || 'Untitled Reminder',
-        reminderDateTime: r.reminder_date_time || new Date().toISOString(),
-        taskId: r.task_id || null,
-        completed: r.completed || false,
-        createdDate: r.created_date || new Date().toISOString()
-      }))
+      // Update local user object
+      this.currentUser.name = newName
+      localStorage.setItem('user', JSON.stringify(this.currentUser))
       
-      console.log('📋 Parsed reminders:', reminders)
-      return reminders
+      this.closeProfileModal()
+      this.showNotification('Profile updated successfully', '✓', 3000)
     } catch (error) {
-      console.error('❌ Error loading reminders from Supabase:', error)
-      return []
+      console.error('Failed to update profile:', error)
+      this.showNotification('Failed to update profile', '⚠️', 3000)
     }
   }
 
-  // Reminder System
-  setupReminderSystem() {
-    // Check reminders every minute
-    this.reminderCheckInterval = setInterval(() => this.checkReminders(), 60000)
-    // Initial check
-    this.checkReminders()
-  }
+  /**
+   * Cleanup on page unload
+   */
+  cleanup() {
+    // Cleanup all modules
+    if (this.authModule) this.authModule.cleanup()
+    if (this.aiAssistant) this.aiAssistant.cleanup()
+    if (this.reminderSystem) this.reminderSystem.cleanup()
+    if (this.taskManager) this.taskManager.cleanup()
 
-  requestNotificationPermission() {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
-  }
+    // Log metrics
+    this.performanceMonitor.logMetrics()
 
-  checkReminders() {
-    const now = new Date()
-    
-    this.reminders.forEach(reminder => {
-      if (reminder.completed) return
-
-      const reminderTime = new Date(reminder.reminderDateTime)
-      const timeDiff = reminderTime - now
-      const hoursLeft = timeDiff / (1000 * 60 * 60)
-
-      // Notify if within 5 hours and hasn't been notified yet
-      if (hoursLeft <= 5 && hoursLeft > 0) {
-        const reminderId = `${reminder.id}-${Math.floor(hoursLeft)}`
-        
-        if (!this.notifiedReminders.has(reminderId)) {
-          this.notifiedReminders.add(reminderId)
-          this.sendReminderNotification(reminder, hoursLeft)
-        }
-      }
-
-      // Clear notification tracking if reminder time has passed
-      if (hoursLeft <= 0) {
-        this.notifiedReminders.delete(`${reminder.id}-*`)
-      }
-    })
-  }
-
-  sendReminderNotification(reminder, hoursLeft) {
-    const hours = Math.ceil(hoursLeft)
-    const message = `⏰ Reminder: "${reminder.title}" in ${hours} hour${hours !== 1 ? 's' : ''}`
-    
-    this.showNotification(message, '⏰', 5000)
-
-    // Browser notification if permitted
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification('TaskFlow Reminder', {
-        body: message,
-        icon: '⏰'
-      })
-    }
-  }
-
-  createReminder(title, reminderDateTime, taskId = null) {
-    // Validate that reminder date is in the future
-    const reminderDate = new Date(reminderDateTime)
-    const now = new Date()
-    
-    if (reminderDate <= now) {
-      console.warn('⚠️ Reminder date is in the past:', reminderDate)
-      this.showNotification('⚠️ Cannot create reminder for a past date. Please choose a future date and time!', '⚠️', 4000)
-      return null
-    }
-    
-    const reminder = {
-      id: Date.now(),
-      title,
-      reminderDateTime,
-      taskId,
-      completed: false,
-      createdDate: new Date().toISOString()
-    }
-    
-    this.reminders.unshift(reminder)
-    this.saveReminders()
-    this.showNotification(`Reminder set for ${new Date(reminderDateTime).toLocaleString()}`, '⏰', 3000)
-    return reminder
-  }
-
-  async deleteReminder(id) {
-    // Delete from Supabase first if user is logged in
-    if (this.currentUser) {
-      await this.deleteReminderFromSupabase(id)
-    }
-    
-    this.reminders = this.reminders.filter(r => r.id !== id)
-    this.saveReminders()
-    this.showNotification('Reminder deleted', '🗑️', 2000)
-  }
-
-  completeReminder(id) {
-    const reminder = this.reminders.find(r => r.id === id)
-    if (reminder) {
-      reminder.completed = true
-      this.saveReminders()
-      this.showNotification('Reminder completed!', '✓', 2000)
-    }
-  }
-
-  getUpcomingReminders() {
-    const now = new Date()
-    console.log('📊 Total reminders in memory:', this.reminders.length)
-    const upcoming = this.reminders
-      .filter(r => !r.completed && new Date(r.reminderDateTime) > now)
-      .sort((a, b) => new Date(a.reminderDateTime) - new Date(b.reminderDateTime))
-      .slice(0, 5)
-    console.log('📅 Upcoming reminders (not completed, future):', upcoming.length)
-    return upcoming
-  }
-
-  getDefaultTasks() {
-    // Return empty array - no demo tasks for non-authenticated users
-    return []
+    // Cleanup core infrastructure
+    this.memoryManager.cleanup()
   }
 }
 
-// Initialize app and expose to window for debugging
-const app = new TodoApp()
-window.app = app
-console.log('✅ TaskFlow app initialized and available as window.app')
+// Initialize application when DOM is ready
+document.addEventListener('DOMContentLoaded', async () => {
+  const app = new App()
+  await app.init()
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => app.cleanup())
+})
