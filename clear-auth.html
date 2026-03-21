@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clear Auth State</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .container {
+      background: white;
+      padding: 2rem;
+      border-radius: 1rem;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+      max-width: 400px;
+    }
+    h1 { margin: 0 0 1rem; color: #333; }
+    p { color: #666; margin-bottom: 1.5rem; }
+    button {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 0.75rem 2rem;
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #5568d3; }
+    .success {
+      color: #10b981;
+      font-weight: 600;
+      margin-top: 1rem;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔒 Clear Auth State</h1>
+    <p>This will clear your authentication tokens and force a fresh login.</p>
+    <button onclick="clearAuth()">Clear Authentication</button>
+    <div class="success" id="success">✓ Auth state cleared! You can close this page.</div>
+  </div>
+
+  <script>
+    function clearAuth() {
+      localStorage.removeItem('user');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('refreshToken');
+      document.getElementById('success').style.display = 'block';
+      setTimeout(() => {
+        window.close();
+      }, 2000);
+    }
+  </script>
+</body>
+</html>
